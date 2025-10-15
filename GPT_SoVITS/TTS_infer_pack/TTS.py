@@ -36,6 +36,12 @@ from TTS_infer_pack.text_segmentation_method import splits
 from TTS_infer_pack.TextPreprocessor import TextPreprocessor
 from sv import SV
 
+#add
+from line_profiler import profile
+from time import time as ttime
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
 resample_transform_dict = {}
 
 
@@ -979,6 +985,254 @@ class TTS:
         Stop the inference process.
         """
         self.stop_flag = True
+
+    @torch.no_grad()
+    async def run_with_cache(self, inputs: dict, websocket, request_id):
+        """
+        Text to speech inf=erence.
+
+        Args:
+            inputs (dict):
+                {
+                    "text": "",                   # str.(required) text to be synthesized
+                    "text_lang: "",               # str.(required) language of the text to be synthesized
+                    "ref_audio_path": "",         # str.(required) reference audio path
+                    "prompt_text": "",            # str.(optional) prompt text for the reference audio
+                    "prompt_lang": "",            # str.(required) language of the prompt text for the reference audio
+                    "top_k": 5,                   # int. top k sampling
+                    "top_p": 1,                   # float. top p sampling
+                    "temperature": 1,             # float. temperature for sampling
+                    "text_split_method": "cut0",  # str. text split method, see text_segmentation_method.py for details.
+                    "batch_size": 1,              # int. batch size for inference
+                    "batch_threshold": 0.75,      # float. threshold for batch splitting.
+                    "split_bucket: True,          # bool. whether to split the batch into multiple buckets.
+                    "return_fragment": True,      # bool. step by step return the audio fragment.
+                    "speed_factor":1.0,           # float. control the speed of the synthesized audio.
+                    "fragment_interval":0.3,      # float. to control the interval of the audio fragment.
+                    "seed": -1,                   # int. random seed for reproducibility.
+                    "parallel_infer": True,       # bool. whether to use parallel inference.
+                    "repetition_penalty": 1.35    # float. repetition penalty for T2S model.
+                }
+        returns:
+            Tuple[int, np.ndarray]: sampling rate and audio data.
+        """
+        ########## variables initialization ###########
+        self.stop_flag: bool = False
+        texts_batch: list[str] = inputs.get("texts", "")
+        text_lang: str = inputs.get("text_lang", "auto")
+        prompt_caches: dict = inputs.get("prompt_caches", {})
+        batch_threshold = inputs.get("batch_threshold", 0.75)
+        top_k: int = inputs.get("top_k", 5)
+        top_p: float = inputs.get("top_p", 1)
+        temperature: float = inputs.get("temperature", 1)
+        text_split_method: str = inputs.get("text_split_method", "cut2")
+        batch_size = inputs.get("batch_size", 999)
+        speed_factor = inputs.get("speed_factor", 1.0)
+        fragment_interval = inputs.get("fragment_interval", 0.3)
+        repetition_penalty = inputs.get("repetition_penalty", 1.2)
+
+        seed = inputs.get("seed", -1)
+        seed = seed if seed else -1
+        set_seed(seed)
+
+        self.t2s_model.model.infer_panel = self.t2s_model.model.infer_panel_batch
+
+        if fragment_interval < 0.01:
+            fragment_interval = 0.01
+            print(i18n("分段间隔过小，已自动设置为0.01"))
+
+        assert text_lang in self.configs.languages
+        # init batch
+        prompt_caches = self.move_tensors_to_cuda(prompt_caches)
+        t0 = ttime()
+
+        ###### text preprocessing ########
+        t1 = ttime()
+        # 肯定是要切分的，只会走else
+        print(i18n("############ 切分文本 ############"))
+        data_batch = []
+        data_idx = []
+        data_batch = self.text_preprocessor.pre_seg_text(
+            texts_batch, "auto", text_split_method
+        )
+
+        @profile
+        def make_batch(batch_texts, data_idx):
+            batch_data = []
+            print(i18n("############ 提取文本Bert特征 ############"))
+            (
+                phones_batch,
+                bert_features_batch,
+                norm_text_batch,
+                data_idx,
+            ) = (
+                self.text_preprocessor.segment_and_extract_feature_for_text(
+                    batch_texts, text_lang
+                )
+            )
+
+            for i in range(len(phones_batch)):
+                phones = phones_batch[i]
+                bert_features = bert_features_batch[i]
+                norm_text = norm_text_batch[i]
+                if phones is None:
+                    continue
+                res = {
+                    "phones": phones,
+                    "bert_features": bert_features,
+                    "norm_text": norm_text,
+                }
+                batch_data.append(res)
+            if len(batch_data) == 0:
+                return None
+            batch, _ = self.to_batch(
+                batch_data,
+                prompt_data=prompt_caches,
+                prompt_idx=data_idx,
+                batch_size=batch_size,
+                threshold=batch_threshold,
+                split_bucket=False,
+                device=self.configs.device,
+                precision=self.precision,
+            )
+            return batch[0], data_idx
+
+        t2 = ttime()
+        await asyncio.sleep(0)
+        try:
+            print("############ 推理 ############")
+            t_34 = 0.0
+            t_45 = 0.0
+            item, data_idx = make_batch(data_batch, data_idx)
+
+            batch_phones: List[torch.LongTensor] = item["phones"]
+            # batch_phones = self.divide_batch(batch_phones, data_idx)
+            # batch_phones:torch.LongTensor = item["phones"]
+            batch_phones_len: torch.LongTensor = item["phones_len"]
+            # batch_phones_len = self.divide_batch(batch_phones_len, data_idx)
+            all_phoneme_ids: torch.LongTensor = item["all_phones"]
+            all_phoneme_lens: torch.LongTensor = item["all_phones_len"]
+            all_bert_features: torch.LongTensor = item["all_bert_features"]
+            norm_text: str = item["norm_text"]
+            max_len = item["max_len"]
+            print(i18n("前端处理后的文本(每句):"), norm_text)
+            prompts = []
+            y_lens = []
+            y_max_len = 0
+
+            for i, prompt in enumerate(prompt_caches):
+                count = data_idx.count(i)
+                prompt = prompt["prompt_semantic"].to(self.configs.device)
+                prompt.unsqueeze_(0)
+                for j in range(count):
+                    prompts.append(prompt)
+                    y_lens.append(prompt.shape[1])
+                y_max_len = max(y_max_len, prompt.shape[1])
+
+            y_lens = torch.LongTensor(y_lens).to(self.configs.device)
+            y_list = [
+                F.pad(item, (0, y_max_len - item.shape[1], 0, 0), value=0)
+                if item.shape[1] < y_max_len
+                else item
+                for item in prompts
+            ]
+            y = torch.cat(y_list, dim=0)
+            await asyncio.sleep(0)
+            t3 = ttime()
+
+            with torch.no_grad():
+                pred_semantic_lists, idx_lists = self.t2s_model.model.infer_panel_batch(
+                    all_phoneme_ids,
+                    all_phoneme_lens,
+                    y,
+                    y_lens,
+                    all_bert_features,
+                    # prompt_phone_len=ph_offset,
+                    top_k=top_k,
+                    top_p=top_p,
+                    temperature=temperature,
+                    early_stop_num=self.configs.hz * self.configs.max_sec,
+                    max_len=max_len,
+                    repetition_penalty=repetition_penalty,
+                )
+
+            t4 = ttime()
+            t_34 += t4 - t3
+            await asyncio.sleep(0)
+            # 接受的ge已经处理好声线融合，是一维的list。prompt_cache["ge"]是一个tensor
+            ge_batch = []
+            for prompt_cache in prompt_caches:
+                # ge: list[torch.Tensor] = [
+                #     item.to(dtype=self.precision, device=self.configs.device)
+                #     for item in prompt_cache["ge"]
+                # ]
+                ge_batch.append(prompt_cache["ge"].to(dtype=self.precision, device=self.configs.device))
+            ge_batch = [ge_batch[idx] for idx in data_idx]
+            batch_audio_fragment = []
+
+            # 这里要记得加 torch.no_grad() 不然速度慢一大截
+            with torch.no_grad():
+            
+            ## vits并行推理 method 1
+                pred_semantic_list = [
+                    item[-idx:] for item, idx in zip(pred_semantic_lists, idx_lists)
+                ]
+                pred_semantic_len = torch.LongTensor(
+                    [item.shape[0] for item in pred_semantic_list]
+                ).to(self.configs.device)
+                pred_semantic = self.batch_sequences(
+                    pred_semantic_list, axis=0, pad_value=0
+                ).unsqueeze(0)
+                max_len = 0
+                for w in range(0, len(batch_phones)):
+                    max_len = max(max_len, batch_phones[w].shape[-1])
+                batch_phones_ = self.batch_sequences(
+                    batch_phones, axis=0, pad_value=0, max_length=max_len
+                )
+                batch_phones_ = batch_phones_.to(self.configs.device)
+                batch_audio_fragment = self.vits_model.batched_decode(
+                    pred_semantic,
+                    pred_semantic_len,
+                    batch_phones_,
+                    batch_phones_len,
+                    ge_batch, # ! 这个可以缓存
+                )
+                batch_audio_fragments = self.divide_batch(batch_audio_fragment, data_idx)
+
+            t5 = ttime()
+            t_45 += t5 - t4
+            # send_status = asyncio.create_task(websocket.send(json.dumps({"status": "free", "request_id": request_id})))
+            # await asyncio.sleep(0)
+            audio_list = []
+            def process_audio_fragment(fragment, sr, speed_factor, fragment_interval):
+                return self.audio_postprocess(
+                    [fragment], sr, None, speed_factor, False, fragment_interval
+                )
+
+            with ThreadPoolExecutor() as executor:
+                audio_list = list(
+                    executor.map(
+                        lambda frag: process_audio_fragment(
+                            frag,
+                            self.configs.sampling_rate,
+                            speed_factor,
+                            fragment_interval,
+                        ),
+                        batch_audio_fragments,
+                    )
+                )
+            t6 = ttime()
+            print(
+                "%.3f\t%.3f\t%.3f\t%.3f\t%.3f\t%.3f"
+                % (t1 - t0, t2 - t1, t3 - t2, t4 - t3, t5 - t4, t6 - t5)
+            )
+            return audio_list
+        except Exception as e:
+            traceback.print_exc()
+            raise e
+        finally:
+            self.empty_cache()
+
 
     @torch.no_grad()
     def run(self, inputs: dict):

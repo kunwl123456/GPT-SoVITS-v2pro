@@ -579,12 +579,226 @@ class Text2SemanticDecoder(nn.Module):
         targets = F.pad(y, (0, 1), value=0) + eos_id * F.pad(y_mask_int, (0, 1), value=1)
         # 错位
         return targets[:, :-1], targets
+    def infer_panel_batch(
+        self,
+        x: List[
+            torch.LongTensor
+        ],  #####全部文本token，即音素tokenization, text-> eme->token [231+0.1321151241421,245+0.1285912941,231,521,533,235,123,1,2315,723]
+        x_lens: torch.LongTensor,  ##### [1,10]
+        prompts: torch.LongTensor,  ####参考音频token,即wav->hubert->vq量化 [1,52,10]
+        prompts_lens: torch.LongTensor,
+        bert_feature: List[
+            torch.LongTensor
+        ],  ###全部文本的embedding 即text->embedding,然后维度扩展到和phones一致
+        top_k: int = -100,
+        top_p: int = 100,
+        early_stop_num: int = -1,
+        temperature: float = 1.0,
+        repetition_penalty: float = 1,
+        **kwargs,
+    ):
+        # max_len = max(bert_max_len, phones_max_len)
+
+        max_len = kwargs.get("max_len", x_lens.max())
+        print("max_len", max_len)
+        # max_len = x_lens.max()
+        # for x_item, bert_item in zip(x, bert_feature):
+        #     max_len = max(max_len, x_item.shape[0], bert_item.shape[1])
+        x_list = [self.ar_text_embedding(item) for item in x]
+        x_list = [
+            F.pad(item, (0, 0, 0, max_len - item.shape[0]), value=0)
+            if item.shape[0] < max_len
+            else item
+            for item in x_list
+        ]
+        x = torch.stack(x_list, dim=0)
+
+        bert_features_list = [
+            self.bert_proj(item.transpose(0, 1)) for item in bert_feature
+        ]
+        bert_features_list = [
+            F.pad(item, (0, 0, 0, max_len - item.shape[0]), value=0)
+            if item.shape[0] < max_len
+            else item
+            for item in bert_features_list
+        ]
+        bert_feature = torch.stack(bert_features_list, dim=0)
+
+        x = x + bert_feature
+        x = self.ar_text_position(x)
+
+        # AR Decoder
+        y = prompts
+        y_lens = prompts_lens
+        x_len = x.shape[1]
+        x_attn_mask = torch.zeros((x_len, x_len), dtype=torch.bool)
+        stop = False
+
+        k_cache = None
+        v_cache = None
+        ###################  first step ##########################
+        if y is not None:
+            y_emb = self.ar_audio_embedding(y)
+            y_len = y_emb.shape[1]
+            prefix_len = y.shape[1]  # ! 在这里准备prefix_len
+            # y_lens = torch.LongTensor([y_emb.shape[1]] * y_emb.shape[0]).to(x.device)      # 替换为自定义的y_lens
+            y_pos = self.ar_audio_position(y_emb)
+            xy_pos = torch.concat([x, y_pos], dim=1)  # ! 在这里准备xy_pos
+            ref_free = False
+
+        ##### create mask #####
+        bsz = x.shape[0]
+        src_len = x_len + y_len
+        y_paddind_mask = make_pad_mask(y_lens, y_len).to(
+            x.device
+        )  # y_lens=[272,272,272] y_len=272
+        x_paddind_mask = make_pad_mask(
+            x_lens, max_len
+        ).to(
+            x.device
+        )  # x_lens=[122,86,122] max_len=122  x_paddind_mask=[[F,F,..,F],[F,F,T,...,T],[F,F,...,F]]
+
+        # (bsz, x_len + y_len)
+        xy_padding_mask = torch.concat(
+            [x_paddind_mask, y_paddind_mask], dim=1
+        )  # ! 在这里准备xy_padding_mask
+
+        x_mask = F.pad(
+            x_attn_mask,
+            (0, y_len),  ###xx的纯0扩展到xx纯0+xy纯1，(x,x+y)
+            value=True,
+        )
+        y_mask = F.pad(  ###yy的右上1扩展到左边xy的0,(y,x+y)
+            torch.triu(torch.ones(y_len, y_len, dtype=torch.bool), diagonal=1),
+            (x_len, 0),
+            value=False,
+        )
+
+        xy_mask = (
+            torch.concat([x_mask, y_mask], dim=0)
+            .view(1, src_len, src_len)
+            .expand(bsz, -1, -1)
+            .to(x.device)
+        )
+        # xy_mask = torch.triu(torch.ones(src_len, src_len, dtype=torch.bool, device=x.device), diagonal=1).view(1 , src_len, src_len).expand(bsz, -1, -1).to(x.device)
+        _xy_padding_mask = xy_padding_mask.view(bsz, 1, src_len).expand(
+            -1, src_len, src_len
+        )
+        xy_attn_mask = xy_mask.logical_or(_xy_padding_mask)  # ! 在这里准备xy_attn_mask
+        xy_attn_mask = xy_attn_mask.unsqueeze(1).expand(-1, self.num_head, -1, -1)
+        new_attn_mask = torch.zeros_like(xy_attn_mask, dtype=x.dtype)
+        xy_attn_mask = new_attn_mask.masked_fill(xy_attn_mask, float("-inf"))
+
+        xy_padding_mask = ~xy_padding_mask.view(bsz, src_len, 1).expand(
+            -1, -1, self.model_dim
+        )
+        xy_padding_mask = xy_padding_mask.to(dtype=x.dtype)
+        ###### decode #####
+        y_list = [None] * y.shape[0]
+        batch_idx_map = list(range(y.shape[0]))  # ! 在这里准备batch_idx_map
+        idx_list = [None] * y.shape[0]
+
+        # 准备好 xy_pos xy_attn_mask xy_padding_mask y batch_idx_map prefix_len
+        for idx in tqdm(range(1500), disable=False):
+            if idx == 0:
+                xy_dec, k_cache, v_cache = self.t2s_transformer.process_prompt(
+                    xy_pos, xy_attn_mask, xy_padding_mask
+                )
+            else:
+                xy_dec, k_cache, v_cache = self.t2s_transformer.decode_next_token(
+                    xy_pos, k_cache, v_cache
+                )
+            logits = self.ar_predict_layer(xy_dec[:, -1])
+
+            if idx == 0:
+                xy_attn_mask = None
+                logits = logits[:, :-1]
+
+            samples = sample(
+                logits,
+                y,
+                top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                temperature=temperature,
+            )[0]
+
+            y = torch.concat([y, samples], dim=1)
+
+            ####### 移除batch中已经生成完毕的序列,进一步优化计算量
+            reserved_idx_of_batch_for_y = None
+            if (self.EOS in samples[:, 0]) or (
+                self.EOS in torch.argmax(logits, dim=-1)
+            ):  ###如果生成到EOS，则停止
+                l = samples[:, 0] == self.EOS
+                removed_idx_of_batch_for_y = torch.where(l == True)[0].tolist()
+                reserved_idx_of_batch_for_y = torch.where(l == False)[0]
+                # batch_indexs = torch.tensor(batch_idx_map, device=y.device)[removed_idx_of_batch_for_y]
+                for i in removed_idx_of_batch_for_y:
+                    batch_index = batch_idx_map[i]
+                    idx_list[batch_index] = idx - 1
+                    y_list[batch_index] = y[i, :-1]
+
+                batch_idx_map = [
+                    batch_idx_map[i] for i in reserved_idx_of_batch_for_y.tolist()
+                ]
+
+            # 只保留batch中未生成完毕的序列
+            if reserved_idx_of_batch_for_y is not None:
+                # index = torch.LongTensor(batch_idx_map).to(y.device)
+                y = torch.index_select(y, dim=0, index=reserved_idx_of_batch_for_y)
+                if k_cache is not None:
+                    for i in range(len(k_cache)):
+                        k_cache[i] = torch.index_select(
+                            k_cache[i], dim=0, index=reserved_idx_of_batch_for_y
+                        )
+                        v_cache[i] = torch.index_select(
+                            v_cache[i], dim=0, index=reserved_idx_of_batch_for_y
+                        )
+
+            if (
+                early_stop_num != -1 and (y.shape[1] - prefix_len) > early_stop_num
+            ) or idx == 1499:
+                print("use early stop num:", early_stop_num)
+                stop = True
+                for i, batch_index in enumerate(batch_idx_map):
+                    batch_index = batch_idx_map[i]
+                    idx_list[batch_index] = idx
+                    y_list[batch_index] = y[i, :-1]
+
+            if not (None in idx_list):
+                stop = True
+
+            if stop:
+                if y.shape[1] == 0:
+                    y = torch.concat([y, torch.zeros_like(samples)], dim=1)
+                    print("bad zero prediction")
+                print(f"T2S Decoding EOS [{prefix_len} -> {y.shape[1]}]")
+                break
+
+            ####################### update next step ###################################
+            y_emb = self.ar_audio_embedding(y[:, -1:])
+            xy_pos = (
+                y_emb * self.ar_audio_position.x_scale
+                + self.ar_audio_position.alpha
+                * self.ar_audio_position.pe[:, y_len + idx].to(
+                    dtype=y_emb.dtype, device=y_emb.device
+                )
+            )
+
+        if None in idx_list:
+            for i in range(x.shape[0]):
+                if idx_list[i] is None:
+                    idx_list[i] = 1500 - 1  ###如果没有生成到EOS，就用最大长度代替
+        if ref_free:
+            return y_list, [0] * x.shape[0]
+        return y_list, idx_list
 
     def infer_panel_batch_infer(
         self,
-        x: List[torch.LongTensor],  #####全部文本token
-        x_lens: torch.LongTensor,
-        prompts: torch.LongTensor,  ####参考音频token
+        x: List[torch.LongTensor],  #####全部文本token，即音素tokenization, text-> eme->token [231+0.1321151241421,245+0.1285912941,231,521,533,235,123,1,2315,723]
+        x_lens: torch.LongTensor,   ##### [1,10]
+        prompts: torch.LongTensor,  ####参考音频token ,即wav->hubert->vq量化 [1,52,10]
         bert_feature: List[torch.LongTensor],
         top_k: int = -100,
         top_p: int = 100,
