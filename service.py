@@ -155,17 +155,17 @@ async def service(gateway_url):
 
 if __name__ == "__main__":
     # 使用 argparse 处理命令行参数
-    parser = argparse.ArgumentParser(description="Service to connect to Gateway")
-    parser.add_argument(
-        "--gateway-url", 
-        type=str, 
-        required=True, 
-        help="The WebSocket URL of the gateway to connect to"
-    )
-    args = parser.parse_args()
+    # parser = argparse.ArgumentParser(description="Service to connect to Gateway")
+    # parser.add_argument(
+    #     "--gateway-url",
+    #     type=str,
+    #     required=True,
+    #     help="The WebSocket URL of the gateway to connect to"
+    # )
+    # args = parser.parse_args()
 
     # 获取传入的 gateway URL
-    gateway_url = args.gateway_url
+    gateway_url ="ws://localhost:8000/ws" #args.gateway_url
 
     # 启动时主动连接到 gateway
     loop = asyncio.get_event_loop()

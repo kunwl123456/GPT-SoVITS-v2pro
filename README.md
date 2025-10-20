@@ -473,6 +473,13 @@ Thankful to @Naozumi520 for providing the Cantonese training set and for the gui
 
 ## Thanks to all contributors for their efforts
 
+
+## add op
+1) AR目录软连接
+cd /home/kuanglixiang/voice_server/GPT-SoVITS-v2pro
+ln -s GPT_SoVITS/AR AR
+
+
 <a href="https://github.com/RVC-Boss/GPT-SoVITS/graphs/contributors" target="_blank">
   <img src="https://contrib.rocks/image?repo=RVC-Boss/GPT-SoVITS" />
 </a>

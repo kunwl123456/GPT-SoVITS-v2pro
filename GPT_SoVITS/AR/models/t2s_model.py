@@ -36,38 +36,38 @@ default_config = {
 
 # @torch.jit.script ## 使用的话首次推理会非常慢，而且推理速度不稳定
 # Efficient implementation equivalent to the following:
-def scaled_dot_product_attention(
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    attn_mask: Optional[torch.Tensor] = None,
-    scale: Optional[torch.Tensor] = None,
-) -> torch.Tensor:
-    B, H, L, S = query.size(0), query.size(1), query.size(-2), key.size(-2)
-    if scale is None:
-        scale_factor = torch.tensor(1 / math.sqrt(query.size(-1)))
-    else:
-        scale_factor = scale
-    attn_bias = torch.zeros(B, H, L, S, dtype=query.dtype, device=query.device)
+# def scaled_dot_product_attention(
+#     query: torch.Tensor,
+#     key: torch.Tensor,
+#     value: torch.Tensor,
+#     attn_mask: Optional[torch.Tensor] = None,
+#     scale: Optional[torch.Tensor] = None,
+# ) -> torch.Tensor:
+#     B, H, L, S = query.size(0), query.size(1), query.size(-2), key.size(-2)
+#     if scale is None:
+#         scale_factor = torch.tensor(1 / math.sqrt(query.size(-1)))
+#     else:
+#         scale_factor = scale
+#     attn_bias = torch.zeros(B, H, L, S, dtype=query.dtype, device=query.device)
 
-    if attn_mask is not None:
-        if attn_mask.dtype == torch.bool:
-            attn_bias.masked_fill_(attn_mask, float("-inf"))
-        else:
-            attn_bias += attn_mask
-    attn_weight = query @ key.transpose(-2, -1) * scale_factor
-    attn_weight += attn_bias
-    attn_weight = torch.softmax(attn_weight, dim=-1)
+#     if attn_mask is not None:
+#         if attn_mask.dtype == torch.bool:
+#             attn_bias.masked_fill_(attn_mask, float("-inf"))
+#         else:
+#             attn_bias += attn_mask
+#     attn_weight = query @ key.transpose(-2, -1) * scale_factor
+#     attn_weight += attn_bias
+#     attn_weight = torch.softmax(attn_weight, dim=-1)
 
-    if attn_mask is not None:
-        if attn_mask.dtype == torch.bool:
-            attn_weight.masked_fill_(attn_mask, 0)
-        else:
-            attn_mask[attn_mask != float("-inf")] = 0
-            attn_mask[attn_mask == float("-inf")] = 1
-            attn_weight.masked_fill_(attn_mask, 0)
+#     if attn_mask is not None:
+#         if attn_mask.dtype == torch.bool:
+#             attn_weight.masked_fill_(attn_mask, 0)
+#         else:
+#             attn_mask[attn_mask != float("-inf")] = 0
+#             attn_mask[attn_mask == float("-inf")] = 1
+#             attn_weight.masked_fill_(attn_mask, 0)
 
-    return attn_weight @ value
+#     return attn_weight @ value
 
 
 @torch.jit.script
@@ -139,7 +139,9 @@ class T2SBlock:
         padding_mask: Optional[torch.Tensor] = None,
         torch_sdpa: bool = True,
     ):
-        q, k, v = F.linear(self.to_mask(x, padding_mask), self.qkv_w, self.qkv_b).chunk(3, dim=-1)
+        q, k, v = F.linear(self.to_mask(x, padding_mask), self.qkv_w, self.qkv_b).chunk(
+            3, dim=-1
+        )
 
         batch_size = q.shape[0]
         q_len = q.shape[1]
@@ -153,17 +155,19 @@ class T2SBlock:
         k = k_cache.view(batch_size, kv_len, self.num_heads, -1).transpose(1, 2)
         v = v_cache.view(batch_size, kv_len, self.num_heads, -1).transpose(1, 2)
 
-        if torch_sdpa:
-            attn = F.scaled_dot_product_attention(q, k, v, ~attn_mask)
-        else:
-            attn = scaled_dot_product_attention(q, k, v, attn_mask)
+        attn = F.scaled_dot_product_attention(q, k, v, attn_mask)
 
-        attn = attn.transpose(1, 2).reshape(batch_size, q_len, -1)
+        attn = attn.permute(2, 0, 1, 3).reshape(batch_size * q_len, self.hidden_dim)
+        attn = attn.view(q_len, batch_size, self.hidden_dim).transpose(1, 0)
         attn = F.linear(self.to_mask(attn, padding_mask), self.out_w, self.out_b)
 
-        x = x + attn
-        x = F.layer_norm(x, [self.hidden_dim], self.norm_w1, self.norm_b1, self.norm_eps1)
-        x = x + self.mlp.forward(x)
+        x = self.to_mask(x + attn, padding_mask)
+        x = F.layer_norm(
+            x, [self.hidden_dim], self.norm_w1, self.norm_b1, self.norm_eps1
+        )
+        x = self.to_mask(
+            x + self.mlp.forward(self.to_mask(x, padding_mask)), padding_mask
+        )
         x = F.layer_norm(
             x,
             [self.hidden_dim],
@@ -194,10 +198,11 @@ class T2SBlock:
         k = k_cache.view(batch_size, kv_len, self.num_heads, -1).transpose(1, 2)
         v = v_cache.view(batch_size, kv_len, self.num_heads, -1).transpose(1, 2)
 
-        if torch_sdpa:
-            attn = F.scaled_dot_product_attention(q, k, v, (~attn_mask) if attn_mask is not None else None)
-        else:
-            attn = scaled_dot_product_attention(q, k, v, attn_mask)
+        # if torch_sdpa:
+        #     attn = F.scaled_dot_product_attention(q, k, v, (~attn_mask) if attn_mask is not None else None)
+        # else:
+        #     attn = scaled_dot_product_attention(q, k, v, attn_mask)
+        attn = F.scaled_dot_product_attention(q, k, v)
 
         attn = attn.transpose(1, 2).reshape(batch_size, q_len, -1)
         attn = F.linear(attn, self.out_w, self.out_b)

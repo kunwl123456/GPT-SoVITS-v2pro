@@ -15,7 +15,11 @@ cn2an
 pypinyin
 pyopenjtalk>=0.4.1
 g2p_en
-torchaudio
+# PyTorch: 因为 RTX 5060 需要 CUDA 12.x，需要单独安装
+# 安装命令: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# 注意：不要只安装 torchaudio，否则会自动安装不匹配的 torch/torchvision 版本
+torch-complex==0.4.4
+torchmetrics==1.4.3
 modelscope==1.10.0
 sentencepiece
 transformers>=4.43,<=4.50

@@ -1003,11 +1003,115 @@ class SynthesizerTrn(nn.Module):
 
         o = self.dec((z * y_mask)[:, :, :], g=ge)
         return o
+    
+    @torch.no_grad()
+    def batched_decode(
+        self, y, y_lengths, text, text_lengths, refers_batch, speed=1, noise_scale=0.5
+    ):
+        # 接受的ge已经处理好声线融合，是一维的list
+        ge = None
+        num = 0
+        ge_list = []
+        # refers_batch = [refers_batch]
+        # for refers in refers_batch:
+        #     ge_batch = None
+        #     num_batch = 0
+        #     for i, refer in enumerate(refers):
+        #         if refer is not None:
+                    
+        #             refer_lengths = torch.LongTensor([refer.size(2)]).to(refer.device)
+        #             refer_mask = torch.unsqueeze(
+        #                 commons.sequence_mask(refer_lengths, refer.size(2)), 1
+        #             ).to(refer.dtype)
+        #             if ge_batch is None:
+        #                 if self.version == "v1":
+        #                     print(refer.shape)
+        #                     ge_batch = self.ref_enc(refer * refer_mask, refer_mask)
+        #                 else:
+        #                     print(refer.shape)
+        #                     ge_batch = self.ref_enc(
+        #                         refer[:, :704] * refer_mask, refer_mask
+        #                     )
+        #             else:
+        #                 if self.version == "v1":
+        #                     ge_batch += self.ref_enc(refer * refer_mask, refer_mask)
+        #                 else:
+        #                     ge_batch += self.ref_enc(
+        #                         refer[:, :704] * refer_mask, refer_mask
+        #                     )
+        #             num_batch += 1
+        #     if ge_batch is not None:
+        #         ge_batch /= num_batch
+        #         ge_list.append(ge_batch)
+        # y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, codes.size(2)), 1).to(
+        #     codes.dtype
+        # )
+        ge = torch.cat(refers_batch, dim=0)  # 将所有ge_batch堆叠成[x,512,1]的形状
+        y_lengths = (y_lengths * 2).long().to(y.device)
+        text_lengths = text_lengths.long().to(text.device)
+        # y_lengths = torch.LongTensor([codes.size(2) * 2]).to(codes.device)
+        # text_lengths = torch.LongTensor([text.size(-1)]).to(text.device)
+
+        # 假设padding之后再decode没有问题, 影响未知，但听起来好像没问题？
+        quantized = self.quantizer.decode(y)
+        if self.semantic_frame_rate == "25hz":
+            quantized = F.interpolate(
+                quantized, size=int(quantized.shape[-1] * 2), mode="nearest"
+            )
+        print("---------- quantized.shape:", quantized.shape)
+        print("---------- ge.shape:", ge.shape)
+        print("---------- text.shape:", text.shape)
+        print("---------- y_lengths:", y_lengths)
+        print("---------- text_lengths:", text_lengths)
+        print("---------- is_v2pro:", self.is_v2pro)
+        
+        # batched_decode 的ge处理需要特殊逻辑
+        # ge 的形状: [batch, gin_channels, 1]，需要转换为适合enc_p使用的形状
+        if self.is_v2pro:
+            # v2pro: 需要转换为512维给enc_p，但保留原始ge给flow和dec
+            ge_for_enc_p = self.ge_to512(ge.transpose(2, 1)).transpose(2, 1)  # [batch, 512, 1]
+            print("---------- ge_for_enc_p.shape:", ge_for_enc_p.shape)
+        else:
+            ge_for_enc_p = ge
+        
+        x, m_p, logs_p, y_mask = self.enc_p(
+            quantized, y_lengths, text, text_lengths, ge_for_enc_p, speed
+        )
+        z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
+
+        z = self.flow(z_p, y_mask, g=ge, reverse=True)
+        z_masked = (z * y_mask)[:, :, :]
+
+        # 串行。把padding部分去掉再decode
+        # o_list:List[torch.Tensor] = []
+        # for i in range(z_masked.shape[0]):
+        #     z_slice = z_masked[i, :, :y_lengths[i]].unsqueeze(0)
+        #     o = self.dec(z_slice, g=ge)[0, 0, :].detach()
+        #     o_list.append(o)
+
+        # 并行（会有问题）。先decode，再把padding的部分去掉
+        #   comment: 感觉没问题
+        o = self.dec(z_masked, g=ge)
+        upsample_rate = int(math.prod(self.upsample_rates))
+        o_lengths = y_lengths * upsample_rate
+        
+        # o_list = torch.split(o, o_lengths.tolist(), dim=2)
+        # o_list = [o[i, 0,:length] for i, length in enumerate(o_lengths)]
+
+        o_list = []
+        for i, idx in enumerate(o_lengths):
+            v = o[i, 0, :idx]
+            o_list.append(v)
+
+        return o_list
+
 
     def extract_latent(self, x):
         ssl = self.ssl_proj(x)
         quantized, codes, commit_loss, quantized_list = self.quantizer(ssl)
         return codes.transpose(0, 1)
+
+
 
 
 class CFM(torch.nn.Module):
@@ -1271,7 +1375,6 @@ class SynthesizerTrnV3(nn.Module):
         ssl = self.ssl_proj(x)
         quantized, codes, commit_loss, quantized_list = self.quantizer(ssl)
         return codes.transpose(0, 1)
-
 
 class SynthesizerTrnV3b(nn.Module):
     """

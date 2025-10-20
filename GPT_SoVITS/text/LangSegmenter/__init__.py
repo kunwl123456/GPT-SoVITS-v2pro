@@ -1,1 +1,1 @@
-from .langsegmenter import LangSegmenter
+from .langsegmenter import LangSegmenter,LangSegment

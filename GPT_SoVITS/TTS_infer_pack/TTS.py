@@ -12,6 +12,15 @@ from tqdm import tqdm
 
 now_dir = os.getcwd()
 sys.path.append(now_dir)
+"""
+Ensure the repository's `GPT_SoVITS` directory is on sys.path BEFORE importing
+`AR.models.*`. Without this, running from the project root causes
+`ModuleNotFoundError: No module named 'AR'` because `AR` lives inside
+`GPT_SoVITS/AR` rather than as a top-level package.
+"""
+gpt_sovits_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if gpt_sovits_dir not in sys.path:
+    sys.path.insert(0, gpt_sovits_dir)
 import os
 from typing import List, Tuple, Union
 
@@ -41,16 +50,24 @@ from line_profiler import profile
 from time import time as ttime
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
+now_dir = os.getcwd()
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from my_utils import DictToAttrRecursive, load_audio
+import io
 resample_transform_dict = {}
+from torchaudio.functional import resample
+from pydub import AudioSegment
 
-
-def resample(audio_tensor, sr0, sr1, device):
-    global resample_transform_dict
-    key = "%s-%s-%s" % (sr0, sr1, str(device))
-    if key not in resample_transform_dict:
-        resample_transform_dict[key] = torchaudio.transforms.Resample(sr0, sr1).to(device)
-    return resample_transform_dict[key](audio_tensor)
+# def resample(audio_tensor, sr0, sr1, device):
+#     global resample_transform_dict
+#     key = "%s-%s-%s" % (sr0, sr1, str(device))
+#     if key not in resample_transform_dict:
+#         resample_transform_dict[key] = torchaudio.transforms.Resample(sr0, sr1).to(device)
+#     return resample_transform_dict[key](audio_tensor)
 
 
 language = os.environ.get("language", "Auto")
@@ -461,6 +478,31 @@ class TTS:
         self.stop_flag: bool = False
         self.precision: torch.dtype = torch.float16 if self.configs.is_half else torch.float32
 
+    @torch.no_grad()
+    def move_tensors_to_cuda(self, data):
+        if isinstance(data, dict):
+            return {k: self.move_tensors_to_cuda(v) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [self.move_tensors_to_cuda(v) for v in data]
+        elif isinstance(data, torch.Tensor):
+            # 修复：根据配置的device移动，而不是硬编码cuda
+            #return data.cuda()
+            return data.to(self.configs.device)
+        else:
+            return data
+
+
+    def clean_up(self):
+        del self.t2s_model
+        del self.vits_model
+        del self.bert_model
+        del self.cnhuhbert_model
+        del self.bert_tokenizer
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+        time.sleep(1)
+
     def _init_models(
         self,
     ):
@@ -468,7 +510,7 @@ class TTS:
         self.init_vits_weights(self.configs.vits_weights_path)
         self.init_bert_weights(self.configs.bert_base_path)
         self.init_cnhuhbert_weights(self.configs.cnhuhbert_base_path)
-        # self.enable_half_precision(self.configs.is_half)
+        # self.enable_half_precision(self.configs.is_half,False)
 
     def init_cnhuhbert_weights(self, base_path: str):
         print(f"Loading CNHuBERT weights from {base_path}")
@@ -532,6 +574,7 @@ class TTS:
 
         # print(f"model_version:{model_version}")
         # print(f'hps["model"]["version"]:{hps["model"]["version"]}')
+        print(f"[DEBUG] Model gin_channels from checkpoint: {kwargs.get('gin_channels', 'NOT FOUND')}")
         if model_version not in v3v4set:
             vits_model = SynthesizerTrn(
                 self.configs.filter_length // 2 + 1,
@@ -739,27 +782,70 @@ class TTS:
             self.vocoder = self.vocoder.to(device)
         if self.sr_model is not None:
             self.sr_model = self.sr_model.to(device)
+    # @profile
+    # def set_ref_audio(self, ref_audio_path: str):
+    #     """
+    #     To set the reference audio for the TTS model,
+    #         including the prompt_semantic and refer_spepc.
+    #     Args:
+    #         ref_audio_path: str, the path of the reference audio.
+    #     """
+    #     self._set_prompt_semantic(ref_audio_path)
+    #     self._set_ref_spec(ref_audio_path)
+    #     self._set_ref_audio_path(ref_audio_path)
 
-    def set_ref_audio(self, ref_audio_path: str):
+    # def _set_ref_audio_path(self, ref_audio_path):
+    #     self.prompt_cache["ref_audio_path"] = ref_audio_path
+
+    @profile
+    def set_ref_audio(self, ref_audios: list, batch_idx: list):
         """
         To set the reference audio for the TTS model,
             including the prompt_semantic and refer_spepc.
         Args:
             ref_audio_path: str, the path of the reference audio.
         """
-        self._set_prompt_semantic(ref_audio_path)
-        self._set_ref_spec(ref_audio_path)
-        self._set_ref_audio_path(ref_audio_path)
+        ref_audios_32k = [
+            load_audio(io.BytesIO(ref_audio)) for ref_audio in sum(ref_audios, [])
+        ]
+        refer_spec = self._set_ref_spec(ref_audios_32k, batch_idx)
+        prompt_semantic = self._set_prompt_semantic(
+            ref_audios_32k, batch_idx
+        )  # TODO: 进去换hubert
+        return prompt_semantic, refer_spec
 
-    def _set_ref_audio_path(self, ref_audio_path):
-        self.prompt_cache["ref_audio_path"] = ref_audio_path
-
-    def _set_ref_spec(self, ref_audio_path):
-        spec_audio = self._get_ref_spec(ref_audio_path)
-        if self.prompt_cache["refer_spec"] in [[], None]:
-            self.prompt_cache["refer_spec"] = [spec_audio]
-        else:
-            self.prompt_cache["refer_spec"][0] = spec_audio
+    # @profile
+    # def _set_ref_spec(self, ref_audio_path):
+    #     spec_audio = self._get_ref_spec(ref_audio_path)
+    #     if self.prompt_cache["refer_spec"] in [[], None]:
+    #         self.prompt_cache["refer_spec"] = [spec_audio]
+    #     else:
+    #         self.prompt_cache["refer_spec"][0] = spec_audio
+    @profile
+    def _set_ref_spec(self, ref_audios: list[torch.Tensor], batch_idx: list):
+        specs = []
+        for ref_audio in ref_audios:
+            audio = resample(ref_audio[0], ref_audio[1], 32000)
+            # audio = ref_audio[0]
+            audio = torch.FloatTensor(audio)
+            audio_norm = audio
+            audio_norm = audio_norm.unsqueeze(0)
+            spec = spectrogram_torch(
+                audio_norm,
+                self.configs.filter_length,
+                self.configs.sampling_rate,
+                self.configs.hop_length,
+                self.configs.win_length,
+                center=False,
+            )
+            spec = spec.to(self.configs.device)
+            if self.configs.is_half:
+                spec = spec.half()
+            # self.refer_spec = spec
+            specs.append(spec)
+        # self.prompt_cache["refer_specs"] = specs
+        specs = self.divide_batch(specs, batch_idx)
+        return specs
 
     def _get_ref_spec(self, ref_audio_path):
         raw_audio, raw_sr = torchaudio.load(ref_audio_path)
@@ -797,32 +883,122 @@ class TTS:
         else:
             audio = None
         return spec, audio
+    
+    # @profile
+    # def _set_prompt_semantic(self, ref_wav_path: str):
+    #     zero_wav = np.zeros(
+    #         int(self.configs.sampling_rate * 0.3),
+    #         dtype=np.float16 if self.configs.is_half else np.float32,
+    #     )
+    #     with torch.no_grad():
+    #         wav16k, sr = librosa.load(ref_wav_path, sr=16000)
+    #         if wav16k.shape[0] > 160000 or wav16k.shape[0] < 48000:
+    #             raise OSError(i18n("参考音频在3~10秒范围外，请更换！"))
+    #         wav16k = torch.from_numpy(wav16k)
+    #         zero_wav_torch = torch.from_numpy(zero_wav)
+    #         wav16k = wav16k.to(self.configs.device)
+    #         zero_wav_torch = zero_wav_torch.to(self.configs.device)
+    #         if self.configs.is_half:
+    #             wav16k = wav16k.half()
+    #             zero_wav_torch = zero_wav_torch.half()
 
-    def _set_prompt_semantic(self, ref_wav_path: str):
-        zero_wav = np.zeros(
-            int(self.configs.sampling_rate * 0.3),
-            dtype=np.float16 if self.configs.is_half else np.float32,
+    #         wav16k = torch.cat([wav16k, zero_wav_torch])
+    #         hubert_feature = self.cnhuhbert_model.model(wav16k.unsqueeze(0))["last_hidden_state"].transpose(
+    #             1, 2
+    #         )  # .float()
+    #         codes = self.vits_model.extract_latent(hubert_feature)
+
+    #         prompt_semantic = codes[0, 0].to(self.configs.device)
+    #         self.prompt_cache["prompt_semantic"] = prompt_semantic
+
+    @profile
+    def _set_prompt_semantic(self, ref_wavs: list[torch.Tensor], batch_idx: list):
+        prompt_semantic = None
+        _data = []
+        for ref_wav in ref_wavs:
+            # convert to io.BytesIO
+            zero_wav = np.zeros(
+                int(self.configs.sampling_rate * 0.3),
+                dtype=np.float16 if self.configs.is_half else np.float32,
+            )
+            with torch.no_grad():
+                # wav16k, sr = librosa.load(ref_wav, sr=16000)
+                # wav16k = load_audio(ref_wav, sr=16000)
+                wav16k = resample(ref_wav[0], ref_wav[1], 16000)
+                # if wav16k.shape[0] > 160000 or wav16k.shape[0] < 48000:
+                #     raise OSError(i18n("参考音频在3~10秒范围外，请更换！"))
+                # wav16k = torch.from_numpy(wav16k)
+                zero_wav_torch = torch.from_numpy(zero_wav)
+                wav16k = wav16k.to(self.configs.device)
+                zero_wav_torch = zero_wav_torch.to(self.configs.device)
+                if self.configs.is_half:
+                    wav16k = wav16k.half()
+                    zero_wav_torch = zero_wav_torch.half()
+
+                wav16k = torch.cat([wav16k, zero_wav_torch])
+                _data.append(wav16k)
+                # hubert_feature = self.cnhuhbert_model.model(
+                #     wav16k.unsqueeze(0)
+                # )[  # TODO: 换一个hubert模型
+                #     "last_hidden_state"
+                # ].transpose(1, 2)  # .float()
+                # codes = self.vits_model.extract_latent(hubert_feature)
+        codes = self.get_hubert(_data)
+        # print("-----------", codes.shape)
+        # torch.save(codes, "/home/ubuntu/code/tts-server/playground/hubert_feature1.pt")
+        # exit(0)
+        prompt_semantics = []
+        codes = self.divide_batch(codes, batch_idx)
+        for idx, code in enumerate(codes):
+            prompt_semantic = None
+            prompt_semantic = code[0][0, 0].to(self.configs.device)
+            prompt_semantics.append(prompt_semantic)
+        # self.prompt_cache["prompt_semantic"] = prompt_semantic
+        return prompt_semantics
+    
+    
+    def divide_batch(self, data: list | torch.LongTensor, idx: list):
+        """
+        Divide the batch into multiple groups according to the idx.
+
+        Args:
+            data (list): the data to be divided. [a,b,c,d,e]
+            idx (list): the index of the data.   [0,0,1,2,2]
+
+        Returns:
+            list: the divided data. [[a, b], [c], [d, e]]
+        """
+        if isinstance(data, torch.LongTensor):
+            data = data.tolist()
+        grouped_results = {}
+        for item, group_index in zip(data, idx):
+            if group_index not in grouped_results:
+                grouped_results[group_index] = []
+            grouped_results[group_index].append(item)
+        return list(grouped_results.values())
+
+    @profile
+    def get_hubert(self, ref_wavs: list[torch.Tensor]):
+        audio_lengths = [x.shape[0] for x in ref_wavs]
+        max_length = max(audio_lengths)
+        padded_inputs = []
+        attention_masks = torch.zeros(
+            (len(ref_wavs), max_length), dtype=torch.long, device=self.configs.device
         )
-        with torch.no_grad():
-            wav16k, sr = librosa.load(ref_wav_path, sr=16000)
-            if wav16k.shape[0] > 160000 or wav16k.shape[0] < 48000:
-                raise OSError(i18n("参考音频在3~10秒范围外，请更换！"))
-            wav16k = torch.from_numpy(wav16k)
-            zero_wav_torch = torch.from_numpy(zero_wav)
-            wav16k = wav16k.to(self.configs.device)
-            zero_wav_torch = zero_wav_torch.to(self.configs.device)
-            if self.configs.is_half:
-                wav16k = wav16k.half()
-                zero_wav_torch = zero_wav_torch.half()
-
-            wav16k = torch.cat([wav16k, zero_wav_torch])
-            hubert_feature = self.cnhuhbert_model.model(wav16k.unsqueeze(0))["last_hidden_state"].transpose(
-                1, 2
-            )  # .float()
-            codes = self.vits_model.extract_latent(hubert_feature)
-
-            prompt_semantic = codes[0, 0].to(self.configs.device)
-            self.prompt_cache["prompt_semantic"] = prompt_semantic
+        for audio in ref_wavs:
+            padding = max_length - len(audio)
+            padded_audio = torch.nn.functional.pad(audio, (0, padding), "constant")
+            padded_inputs.append(padded_audio)
+        padded_inputs = torch.stack(padded_inputs).to(self.configs.device)
+        for i, audio_length in enumerate(audio_lengths):
+            attention_masks[i, :audio_length] = 1
+        res = self.cnhuhbert_model.model(padded_inputs, attention_mask=attention_masks)
+        res = res.last_hidden_state.transpose(1, 2)
+        codes = self.vits_model.extract_latent(res)
+        lengths = []
+        for i in range(len(attention_masks)):
+            lengths.append(math.ceil(math.ceil(audio_lengths[i] / 16000 * 50) / 2))
+        return [codes[i, :, :length].unsqueeze(0) for i, length in enumerate(lengths)]
 
     def batch_sequences(self, sequences: List[torch.Tensor], axis: int = 0, pad_value: int = 0, max_length: int = None):
         seq = sequences[0]
@@ -844,7 +1020,7 @@ class TTS:
             padded_sequences.append(padded_seq)
         batch = torch.stack(padded_sequences)
         return batch
-
+    @profile
     def to_batch(
         self,
         data: list,
@@ -903,6 +1079,10 @@ class TTS:
             all_phones_max_len = 0
             for item in item_list:
                 if prompt_data is not None:
+                    # 打印设备信息
+                    print(f"[DEBUG] prompt_data bert_features device: {prompt_data['bert_features'].device}")
+                    print(f"[DEBUG] item bert_features device: {item['bert_features'].device}")
+                    print(f"[DEBUG] target device: {device}")
                     all_bert_features = torch.cat([prompt_data["bert_features"], item["bert_features"]], 1).to(
                         dtype=precision, device=device
                     )
@@ -958,6 +1138,137 @@ class TTS:
             }
             _data.append(batch)
 
+        return _data, batch_index_list
+
+    @profile
+    def to_batch_infer(
+        self,
+        data: list,
+        prompt_data: list[dict] = None,
+        prompt_idx: list = None,
+        batch_size: int = 999,
+        threshold: float = 0.75,
+        split_bucket: bool = False,
+        device: torch.device = torch.device("cpu"),
+        precision: torch.dtype = torch.float32,
+    ):
+        _data: list = []
+        index_and_len_list = []
+        for idx, item in enumerate(data):
+            norm_text_len = len(item["norm_text"])
+            index_and_len_list.append([idx, norm_text_len])
+
+        batch_index_list = []
+        if split_bucket:
+            index_and_len_list.sort(key=lambda x: x[1])
+            index_and_len_list = np.array(index_and_len_list, dtype=np.int64)
+
+            batch_index_list_len = 0
+            pos = 0
+            while pos < index_and_len_list.shape[0]:
+                # batch_index_list.append(index_and_len_list[pos:min(pos+batch_size,len(index_and_len_list))])
+                pos_end = min(pos + batch_size, index_and_len_list.shape[0])
+                while pos < pos_end:
+                    batch = index_and_len_list[pos:pos_end, 1].astype(np.float32)
+                    score = batch[(pos_end - pos) // 2] / (batch.mean() + 1e-8)
+                    if (score >= threshold) or (pos_end - pos == 1):
+                        batch_index = index_and_len_list[pos:pos_end, 0].tolist()
+                        batch_index_list_len += len(batch_index)
+                        batch_index_list.append(batch_index)
+                        pos = pos_end
+                        break
+                    pos_end = pos_end - 1
+
+            assert batch_index_list_len == len(data)
+
+        else:
+            for i in range(len(data)):
+                if i % batch_size == 0:
+                    batch_index_list.append([])
+                batch_index_list[-1].append(i)
+
+        for batch_idx, index_list in enumerate(batch_index_list):
+            item_list = [data[idx] for idx in index_list]
+            phones_list = []
+            phones_len_list = []
+            # bert_features_list = []
+            all_phones_list = []
+            all_phones_len_list = []
+            all_bert_features_list = []
+            norm_text_batch = []
+            bert_max_len = 0
+            phones_max_len = 0
+
+            
+            for i, item in enumerate(item_list):
+                if prompt_data is not None:
+                    prompt = prompt_data[prompt_idx[index_list[i]]]
+                    # 打印设备信息
+                    print(f"[DEBUG] prompt bert_features device: {prompt['bert_features'].device}")
+                    print(f"[DEBUG] item bert_features device: {item['bert_features'].device}")
+                    print(f"[DEBUG] target device: {device}")
+                    all_bert_features = torch.cat(
+                        [prompt["bert_features"], item["bert_features"]], 1
+                    ).to(dtype=precision, device=device)
+                    all_phones = torch.LongTensor(prompt["phones"] + item["phones"]).to(
+                        device
+                    )
+                    phones = torch.LongTensor(item["phones"]).to(device)
+                    # norm_text = prompt["norm_text"]+item["norm_text"]
+                else:
+                    all_bert_features = item["bert_features"].to(
+                        dtype=precision, device=device
+                    )
+                    phones = torch.LongTensor(item["phones"]).to(device)
+                    all_phones = phones
+                    # norm_text = item["norm_text"]
+
+                bert_max_len = max(bert_max_len, all_bert_features.shape[-1])
+                phones_max_len = max(phones_max_len, phones.shape[-1])
+
+                phones_list.append(phones)
+                phones_len_list.append(phones.shape[-1])
+                all_phones_list.append(all_phones)
+                all_phones_len_list.append(all_phones.shape[-1])
+                all_bert_features_list.append(all_bert_features)
+                norm_text_batch.append(item["norm_text"])
+
+            phones_batch = phones_list
+            all_phones_batch = all_phones_list
+            all_bert_features_batch = all_bert_features_list
+
+            max_len = max(bert_max_len, phones_max_len)
+            # phones_batch = self.batch_sequences(phones_list, axis=0, pad_value=0, max_length=max_len)
+            #### 直接对phones和bert_features进行pad。（padding策略会影响T2S模型生成的结果，但不直接影响复读概率。影响复读概率的主要因素是mask的策略）
+            # all_phones_batch = self.batch_sequences(all_phones_list, axis=0, pad_value=0, max_length=max_len)
+            # all_bert_features_batch = all_bert_features_list
+            # all_bert_features_batch = torch.zeros((len(all_bert_features_list), 1024, max_len), dtype=precision, device=device)
+            # for idx, item in enumerate(all_bert_features_list):
+            #     all_bert_features_batch[idx, :, : item.shape[-1]] = item
+
+            # #### 先对phones进行embedding、对bert_features进行project，再pad到相同长度，（padding策略会影响T2S模型生成的结果，但不直接影响复读概率。影响复读概率的主要因素是mask的策略）
+            # all_phones_list = [self.t2s_model.model.ar_text_embedding(item.to(self.t2s_model.device)) for item in all_phones_list]
+            # all_phones_list = [F.pad(item,(0,0,0,max_len-item.shape[0]),value=0) for item in all_phones_list]
+            # all_phones_batch = torch.stack(all_phones_list, dim=0)
+
+            # all_bert_features_list = [self.t2s_model.model.bert_proj(item.to(self.t2s_model.device).transpose(0, 1)) for item in all_bert_features_list]
+            # all_bert_features_list = [F.pad(item,(0,0,0,max_len-item.shape[0]), value=0) for item in all_bert_features_list]
+            # all_bert_features_batch = torch.stack(all_bert_features_list, dim=0)
+
+            batch = {
+                "phones": phones_batch,
+                "phones_len": torch.LongTensor(phones_len_list).to(device),
+                "all_phones": all_phones_batch,
+                "all_phones_len": torch.LongTensor(all_phones_len_list).to(device),
+                "all_bert_features": all_bert_features_batch,
+                "norm_text": norm_text_batch,
+                "max_len": max_len,
+            }
+            _data.append(batch)
+        max_len = max([batch["max_len"] for batch in _data])
+        print(max_len)
+        for batch in _data:
+            batch["max_len"] = max_len
         return _data, batch_index_list
 
     def recovery_order(self, data: list, batch_index_list: list) -> list:
@@ -1085,7 +1396,7 @@ class TTS:
                 batch_data.append(res)
             if len(batch_data) == 0:
                 return None
-            batch, _ = self.to_batch(
+            batch, _ = self.to_batch_infer(
                 batch_data,
                 prompt_data=prompt_caches,
                 prompt_idx=data_idx,
@@ -1137,6 +1448,11 @@ class TTS:
                 for item in prompts
             ]
             y = torch.cat(y_list, dim=0)
+            
+            # 调试：检查 prompt_semantic 的统计信息
+            print(f"DEBUG prompt_semantic (y): shape={y.shape}, min={y.min().item()}, max={y.max().item()}, mean={y.float().mean().item():.2f}")
+            print(f"DEBUG prompt_semantic unique values sample: {y[0][:20]}")  # 打印前20个值
+            
             await asyncio.sleep(0)
             t3 = ttime()
 
@@ -1177,6 +1493,11 @@ class TTS:
                 pred_semantic_list = [
                     item[-idx:] for item, idx in zip(pred_semantic_lists, idx_lists)
                 ]
+                
+                # 修复：clip 语义 token 到 0-1023，避免 EOS token (1024) 导致量化器解码错误
+                pred_semantic_list = [torch.clamp(item, 0, 1023) for item in pred_semantic_list]
+                print(f"DEBUG: After clamp, pred_semantic_list[0] max={pred_semantic_list[0].max().item()}")
+                
                 pred_semantic_len = torch.LongTensor(
                     [item.shape[0] for item in pred_semantic_list]
                 ).to(self.configs.device)
@@ -1628,6 +1949,60 @@ class TTS:
         except:
             pass
 
+    # def audio_postprocess(
+    #     self,
+    #     audio: List[torch.Tensor],
+    #     sr: int,
+    #     batch_index_list: list = None,
+    #     speed_factor: float = 1.0,
+    #     split_bucket: bool = True,
+    #     fragment_interval: float = 0.3,
+    #     super_sampling: bool = False,
+    # ) -> Tuple[int, np.ndarray]:
+    #     zero_wav = torch.zeros(
+    #         int(self.configs.sampling_rate * fragment_interval), dtype=self.precision, device=self.configs.device
+    #     )
+
+    #     for i, batch in enumerate(audio):
+    #         for j, audio_fragment in enumerate(batch):
+    #             max_audio = torch.abs(audio_fragment).max()  # 简单防止16bit爆音
+    #             if max_audio > 1:
+    #                 audio_fragment /= max_audio
+    #             audio_fragment: torch.Tensor = torch.cat([audio_fragment, zero_wav], dim=0)
+    #             audio[i][j] = audio_fragment
+
+    #     if split_bucket:
+    #         audio = self.recovery_order(audio, batch_index_list)
+    #     else:
+    #         # audio = [item for batch in audio for item in batch]
+    #         audio = sum(audio, [])
+
+    #     audio = torch.cat(audio, dim=0)
+
+    #     if super_sampling:
+    #         print(f"############ {i18n('音频超采样')} ############")
+    #         t1 = time.perf_counter()
+    #         self.init_sr_model()
+    #         if not self.sr_model_not_exist:
+    #             audio, sr = self.sr_model(audio.unsqueeze(0), sr)
+    #             max_audio = np.abs(audio).max()
+    #             if max_audio > 1:
+    #                 audio /= max_audio
+    #         t2 = time.perf_counter()
+    #         print(f"超采样用时：{t2 - t1:.3f}s")
+    #     else:
+    #         audio = audio.cpu().numpy()
+
+    #     audio = (audio * 32768).astype(np.int16)
+
+    #     # try:
+    #     #     if speed_factor != 1.0:
+    #     #         audio = speed_change(audio, speed=speed_factor, sr=int(sr))
+    #     # except Exception as e:
+    #     #     print(f"Failed to change speed of audio: \n{e}")
+
+    #     return sr, audio
+
     def audio_postprocess(
         self,
         audio: List[torch.Tensor],
@@ -1636,51 +2011,35 @@ class TTS:
         speed_factor: float = 1.0,
         split_bucket: bool = True,
         fragment_interval: float = 0.3,
-        super_sampling: bool = False,
-    ) -> Tuple[int, np.ndarray]:
+    ) -> bytes:
         zero_wav = torch.zeros(
-            int(self.configs.sampling_rate * fragment_interval), dtype=self.precision, device=self.configs.device
+            int(self.configs.sampling_rate * fragment_interval),
+            dtype=self.precision,
+            device=self.configs.device,
         )
-
+        processed_audio = []
         for i, batch in enumerate(audio):
             for j, audio_fragment in enumerate(batch):
                 max_audio = torch.abs(audio_fragment).max()  # 简单防止16bit爆音
                 if max_audio > 1:
                     audio_fragment /= max_audio
-                audio_fragment: torch.Tensor = torch.cat([audio_fragment, zero_wav], dim=0)
-                audio[i][j] = audio_fragment
-
-        if split_bucket:
-            audio = self.recovery_order(audio, batch_index_list)
-        else:
-            # audio = [item for batch in audio for item in batch]
-            audio = sum(audio, [])
-
-        audio = torch.cat(audio, dim=0)
-
-        if super_sampling:
-            print(f"############ {i18n('音频超采样')} ############")
-            t1 = time.perf_counter()
-            self.init_sr_model()
-            if not self.sr_model_not_exist:
-                audio, sr = self.sr_model(audio.unsqueeze(0), sr)
-                max_audio = np.abs(audio).max()
-                if max_audio > 1:
-                    audio /= max_audio
-            t2 = time.perf_counter()
-            print(f"超采样用时：{t2 - t1:.3f}s")
-        else:
-            audio = audio.cpu().numpy()
-
+                audio_fragment: torch.Tensor = torch.cat(
+                    [audio_fragment, zero_wav], dim=0
+                )
+                audio_fragment = audio_fragment.cpu().numpy()
+                processed_audio.append(audio_fragment)
+        audio = np.concatenate(processed_audio, 0)
+        # 将音频转换为16位整数格式
         audio = (audio * 32768).astype(np.int16)
+        # 使用 pydub 将音频保存为 MP3 格式
+        audio_segment = AudioSegment(
+            audio.tobytes(), frame_rate=sr, sample_width=2, channels=1
+        )
+        buffer = io.BytesIO()
+        audio_segment.export(buffer, format="mp3", parameters=["-q:a", "0"])
+        buffer.seek(0)
 
-        # try:
-        #     if speed_factor != 1.0:
-        #         audio = speed_change(audio, speed=speed_factor, sr=int(sr))
-        # except Exception as e:
-        #     print(f"Failed to change speed of audio: \n{e}")
-
-        return sr, audio
+        return buffer.getvalue()
 
     def using_vocoder_synthesis(
         self, semantic_tokens: torch.Tensor, phones: torch.Tensor, speed: float = 1.0, sample_steps: int = 32

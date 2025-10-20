@@ -17,6 +17,8 @@ from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket
 from fastapi.responses import StreamingResponse
 from fastapi.websockets import WebSocketState
 from pydantic import BaseModel
+import numpy as np
+from pydub import AudioSegment
 
 load_dotenv(dotenv_path="./.env")
 #load_dotenv(dotenv_path="/workspaces/.env")
@@ -82,7 +84,7 @@ async def process_request(batch_data, batch_requests, queue, websocket, message_
             await websocket.send_json(batch_data)
 
             # 从消息队列中获取机器的响应
-            response_data = await asyncio.wait_for(message_queue.get(), timeout=20.0)
+            response_data = await asyncio.wait_for(message_queue.get(), timeout=80.0)
             audios = zlib.decompress(response_data["bytes"])
             audios = pickle.loads(audios)
             audios = audios[1:]
@@ -224,6 +226,14 @@ async def text2speech(form_data: TTSRequest):
         raise HTTPException(status_code=500, detail=result)
     # 清理状态字典
     del request_status[request_id]
+
+    # 保存音频到本地
+    try:
+        with open("lancer.mp3", "wb") as f:
+            f.write(result)
+        print(f"✅ 音频已保存到 lancer.mp3")
+    except Exception as e:
+        print(f"⚠️ 保存音频文件失败: {e}")
 
     # 返回MP3格式的音频
     return StreamingResponse(io.BytesIO(result), media_type="audio/mpeg")

@@ -604,7 +604,8 @@ def get_phones_and_bert(text, language, version, final=False):
     norm_text = "".join(norm_text_list)
 
     if not final and len(phones) < 6:
-        return get_phones_and_bert("." + text, language, version, final=True)
+        #return get_phones_and_bert("." + text, language, version, final=True)
+        return get_phones_and_bert("." + text, language)
 
     return phones, bert.to(torch.float16 if is_half == True else torch.float32), norm_text
 
