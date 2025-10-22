@@ -45,7 +45,11 @@ rm miniconda.sh
 
 source "$HOME/miniconda3/etc/profile.d/conda.sh"
 
+# Accept Conda Terms of Service - 移除默认频道
+"$HOME/miniconda3/bin/conda" config --remove channels defaults 2>/dev/null || true
 "$HOME/miniconda3/bin/conda" config --add channels conda-forge
+"$HOME/miniconda3/bin/conda" config --set channel_priority strict
+"$HOME/miniconda3/bin/conda" config --set allow_conda_downgrades true
 
 "$HOME/miniconda3/bin/conda" update -q --all -y 1>/dev/null
 

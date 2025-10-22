@@ -1434,7 +1434,7 @@ class TTS:
             for i, prompt in enumerate(prompt_caches):
                 count = data_idx.count(i)
                 prompt = prompt["prompt_semantic"].to(self.configs.device)
-                prompt.unsqueeze_(0)
+                prompt = prompt.unsqueeze(0)  # 使用非原地操作，避免修改被缓存的tensor
                 for j in range(count):
                     prompts.append(prompt)
                     y_lens.append(prompt.shape[1])

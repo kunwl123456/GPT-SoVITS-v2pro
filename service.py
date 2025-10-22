@@ -44,11 +44,9 @@ i18n = I18nAuto()
 cut_method_names = get_cut_method_names()
 
 
-config_path = ""
 argv = sys.argv
 
-if not config_path:
-    config_path = "./GPT_SoVITS/configs/tts_infer.yaml"
+config_path = "/workspace/GPT-SoVITS/GPT_SoVITS/configs/tts_infer.yaml"
 
 tts_config = TTS_Config(config_path)
 tts_pipeline = TTS(tts_config)

@@ -41,7 +41,8 @@ run_conda_quiet() {
 
 run_pip_quiet() {
     local output
-    output=$(pip install "$@" 2>&1) || {
+    # 添加超时和重试机制，防止卡住
+    output=$(pip install --timeout 300 --retries 3 "$@" 2>&1) || {
         echo -e "${ERROR} Pip install failed:\n$output"
         exit 1
     }
@@ -49,7 +50,10 @@ run_pip_quiet() {
 
 run_wget_quiet() {
     if wget --tries=25 --wait=5 --read-timeout=40 -q --show-progress "$@" 2>&1; then
-        tput cuu1 && tput el
+        # 只在有交互式终端时使用 tput
+        if [ -n "$TERM" ] && [ "$TERM" != "dumb" ] && command -v tput >/dev/null 2>&1; then
+            tput cuu1 && tput el 2>/dev/null || true
+        fi
     else
         echo -e "${ERROR} Wget failed"
         exit 1
@@ -321,25 +325,26 @@ if [ "$USE_ROCM" = true ] && [ "$WORKFLOW" = false ]; then
     fi
 fi
 
-if [ "$USE_CUDA" = true ] && [ "$WORKFLOW" = false ]; then
-    if [ "$CUDA" = 128 ]; then
-        echo -e "${INFO}Installing PyTorch For CUDA 12.8..."
-        run_pip_quiet torch torchaudio --index-url "https://download.pytorch.org/whl/cu128"
-    elif [ "$CUDA" = 126 ]; then
-        echo -e "${INFO}Installing PyTorch For CUDA 12.6..."
-        run_pip_quiet torch torchaudio --index-url "https://download.pytorch.org/whl/cu126"
-    fi
-elif [ "$USE_ROCM" = true ] && [ "$WORKFLOW" = false ]; then
-    echo -e "${INFO}Installing PyTorch For ROCm 6.2..."
-    run_pip_quiet torch torchaudio --index-url "https://download.pytorch.org/whl/rocm6.2"
-elif [ "$USE_CPU" = true ] && [ "$WORKFLOW" = false ]; then
-    echo -e "${INFO}Installing PyTorch For CPU..."
-    run_pip_quiet torch torchaudio --index-url "https://download.pytorch.org/whl/cpu"
-elif [ "$WORKFLOW" = false ]; then
-    echo -e "${ERROR}Unknown Err"
-    exit 1
-fi
-echo -e "${SUCCESS}PyTorch Installed"
+# 注意：PyTorch 已经在 Dockerfile 中从 CUDA 源安装
+# if [ "$USE_CUDA" = true ] && [ "$WORKFLOW" = false ]; then
+#     if [ "$CUDA" = 128 ]; then
+#         echo -e "${INFO}Installing PyTorch For CUDA 12.8..."
+#         run_pip_quiet torch torchaudio --index-url "https://download.pytorch.org/whl/cu128"
+#     elif [ "$CUDA" = 126 ]; then
+#         echo -e "${INFO}Installing PyTorch For CUDA 12.6..."
+#         run_pip_quiet torch torchaudio --index-url "https://download.pytorch.org/whl/cu126"
+#     fi
+# elif [ "$USE_ROCM" = true ] && [ "$WORKFLOW" = false ]; then
+#     echo -e "${INFO}Installing PyTorch For ROCm 6.2..."
+#     run_pip_quiet torch torchaudio --index-url "https://download.pytorch.org/whl/rocm6.2"
+# elif [ "$USE_CPU" = true ] && [ "$WORKFLOW" = false ]; then
+#     echo -e "${INFO}Installing PyTorch For CPU..."
+#     run_pip_quiet torch torchaudio --index-url "https://download.pytorch.org/whl/cpu"
+# elif [ "$WORKFLOW" = false ]; then
+#     echo -e "${ERROR}Unknown Err"
+#     exit 1
+# fi
+echo -e "${SUCCESS}PyTorch Already Installed in Dockerfile"
 
 echo -e "${INFO}Installing Python Dependencies From requirements.txt..."
 
@@ -347,26 +352,39 @@ hash -r
 
 run_pip_quiet -r extra-req.txt --no-deps
 
-run_pip_quiet -r requirements.txt
+# 注意：requirements.txt 中的包已经在 Dockerfile 中使用清华镜像源单独安装
+# run_pip_quiet -r requirements.txt
 
 echo -e "${SUCCESS}Python Dependencies Installed"
 
 PY_PREFIX=$(python -c "import sys; print(sys.prefix)")
 PYOPENJTALK_PREFIX=$(python -c "import os, pyopenjtalk; print(os.path.dirname(pyopenjtalk.__file__))")
 
-echo -e "${INFO}Downloading NLTK Data..."
+echo -e "${INFO}Installing NLTK Data..."
 rm -rf nltk_data.zip
-run_wget_quiet "$NLTK_URL" -O nltk_data.zip
-unzip -q -o nltk_data -d "$PY_PREFIX"
+# 从 lib 目录复制，而不是下载
+if [ -f "lib/nltk_data.zip" ]; then
+    cp lib/nltk_data.zip nltk_data.zip
+    echo -e "${INFO}Using local NLTK data from lib directory"
+else
+    run_wget_quiet "$NLTK_URL" -O nltk_data.zip
+fi
+unzip -q -o nltk_data.zip -d "$PY_PREFIX"
 rm -rf nltk_data.zip
-echo -e "${SUCCESS}NLTK Data Downloaded"
+echo -e "${SUCCESS}NLTK Data Installed"
 
-echo -e "${INFO}Downloading Open JTalk Dict..."
+echo -e "${INFO}Installing Open JTalk Dict..."
 rm -rf open_jtalk_dic_utf_8-1.11.tar.gz
-run_wget_quiet "$PYOPENJTALK_URL" -O open_jtalk_dic_utf_8-1.11.tar.gz
+# 从 lib 目录复制，而不是下载
+if [ -f "lib/open_jtalk_dic_utf_8-1.11.tar.gz" ]; then
+    cp lib/open_jtalk_dic_utf_8-1.11.tar.gz open_jtalk_dic_utf_8-1.11.tar.gz
+    echo -e "${INFO}Using local Open JTalk dict from lib directory"
+else
+    run_wget_quiet "$PYOPENJTALK_URL" -O open_jtalk_dic_utf_8-1.11.tar.gz
+fi
 tar -xzf open_jtalk_dic_utf_8-1.11.tar.gz -C "$PYOPENJTALK_PREFIX"
 rm -rf open_jtalk_dic_utf_8-1.11.tar.gz
-echo -e "${SUCCESS}Open JTalk Dic Downloaded"
+echo -e "${SUCCESS}Open JTalk Dic Installed"
 
 if [ "$USE_ROCM" = true ] && [ "$IS_WSL" = true ]; then
     echo -e "${INFO}Updating WSL Compatible Runtime Lib For ROCm..."

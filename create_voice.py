@@ -42,7 +42,8 @@ mongo_client = MongoClient(CONNECTION_STRING)
 db = mongo_client.voice  # 数据库名
 collection = db.voice_cache  # 集合名（与 gateway.py 保持一致）
 
-config_path = "./GPT_SoVITS/configs/tts_infer.yaml"
+#config_path = "./GPT_SoVITS/configs/tts_infer.yaml"
+config_path = "/workspace/GPT-SoVITS/GPT_SoVITS/configs/tts_infer.yaml"
 
 tts_config = TTS_Config(config_path)
 # 初始化TTS模型
@@ -240,7 +241,7 @@ async def create_voice(id: str = Form(...), file: UploadFile = File(...)):
             voice_data["prompt_semantic"] = voice_data["prompt_semantic"].cuda()
             voice_data["ge"] = voice_data["ge"].cuda()
             voice_data["bert_features"] = voice_data["bert_features"].cuda()
-        print(voice_data)
+        #print(voice_data)
         
     return {"message": "Voice created and stored successfully", "id": id}
 
@@ -248,4 +249,4 @@ async def create_voice(id: str = Form(...), file: UploadFile = File(...)):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=3000)
+    uvicorn.run(app, host="0.0.0.0", port=4000)

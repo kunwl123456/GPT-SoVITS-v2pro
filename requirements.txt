@@ -1,3 +1,6 @@
+# PyTorch 官方 CUDA 12.8 源
+--extra-index-url https://download.pytorch.org/whl/cu128
+
 --no-binary=opencc
 numpy<2.0
 scipy
@@ -16,8 +19,11 @@ pypinyin
 pyopenjtalk>=0.4.1
 g2p_en
 # PyTorch: 因为 RTX 5060 需要 CUDA 12.x，需要单独安装
-# 安装命令: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# 安装命令: pip install torch torch torchaudio --index-url https://download.pytorch.org/whl/cu121
 # 注意：不要只安装 torchaudio，否则会自动安装不匹配的 torch/torchvision 版本
+torch
+torchaudio
+torchvision
 torch-complex==0.4.4
 torchmetrics==1.4.3
 modelscope==1.10.0
@@ -47,3 +53,6 @@ huggingface_hub>=0.13
 tokenizers>=0.13,<1
 av>=11
 tqdm
+line_profiler
+# 注意：应用程序额外依赖已经在 Dockerfile 中单独安装（使用清华镜像源）
+# pymongo, motor, aiocache, aiohttp, python-dotenv, pyloudnorm, py3langid
