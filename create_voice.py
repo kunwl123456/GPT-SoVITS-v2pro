@@ -42,8 +42,8 @@ mongo_client = MongoClient(CONNECTION_STRING)
 db = mongo_client.voice  # 数据库名
 collection = db.voice_cache  # 集合名（与 gateway.py 保持一致）
 
-#config_path = "./GPT_SoVITS/configs/tts_infer.yaml"
-config_path = "/workspace/GPT-SoVITS/GPT_SoVITS/configs/tts_infer.yaml"
+config_path = "./GPT_SoVITS/configs/tts_infer.yaml"
+
 
 tts_config = TTS_Config(config_path)
 # 初始化TTS模型

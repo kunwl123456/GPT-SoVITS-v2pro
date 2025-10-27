@@ -1,4 +1,4 @@
-ARG CUDA_VERSION=12.6
+ARG CUDA_VERSION=12.8
 ARG TORCH_BASE=full
 
 FROM xxxxrt666/torch-base:cu${CUDA_VERSION}-${TORCH_BASE}
@@ -52,7 +52,6 @@ COPY requirements.txt /workspace/GPT-SoVITS/
 
 COPY install.sh /workspace/GPT-SoVITS/
 
-COPY lib /workspace/GPT-SoVITS/lib/
 
 # 使用清华镜像源安装所有 Python 依赖（必须在 install.sh 之前）
 RUN pip install  -i https://pypi.tuna.tsinghua.edu.cn/simple line_profiler
@@ -116,11 +115,14 @@ RUN pip install  -i https://pypi.tuna.tsinghua.edu.cn/simple py3langid
 # 现在运行 install.sh（依赖项已经安装完成）
 RUN bash Docker/install_wrapper.sh
 
-# Download NLTK data
-RUN python3 -m nltk.downloader -d /root/miniconda3/nltk_data \
-    cmudict \
-    averaged_perceptron_tagger \
-    punkt
+# 使用本地 NLTK data（从宿主机复制）
+COPY 3rd/nltk_data /root/miniconda3/nltk_data
+
+# Download NLTK data（已改用本地数据，不再下载）
+# RUN python3 -m nltk.downloader -d /root/miniconda3/nltk_data \
+#     cmudict \
+#     averaged_perceptron_tagger \
+#     punkt
 
 EXPOSE 8000 3000 4000 27017
 
@@ -134,15 +136,29 @@ RUN rm -rf /workspace/GPT-SoVITS
 
 WORKDIR /workspace/GPT-SoVITS
 
+# 复制完整代码到容器
 COPY . /workspace/GPT-SoVITS
 
-CMD ["/bin/bash", "-c", "\
-  rm -rf /workspace/GPT-SoVITS/GPT_SoVITS/pretrained_models && \
-  rm -rf /workspace/GPT-SoVITS/GPT_SoVITS/text/G2PWModel && \
-  rm -rf /workspace/GPT-SoVITS/tools/asr/models && \
-  rm -rf /workspace/GPT-SoVITS/tools/uvr5/uvr5_weights && \
-  ln -s /workspace/models/pretrained_models /workspace/GPT-SoVITS/GPT_SoVITS/pretrained_models && \
-  ln -s /workspace/models/G2PWModel /workspace/GPT-SoVITS/GPT_SoVITS/text/G2PWModel && \
-  ln -s /workspace/models/asr_models /workspace/GPT-SoVITS/tools/asr/models && \
-  ln -s /workspace/models/uvr5_weights /workspace/GPT-SoVITS/tools/uvr5/uvr5_weights && \
-  exec bash"]
+# CMD ["/bin/bash", "-c", "\
+#   rm -rf /workspace/GPT-SoVITS/GPT_SoVITS/pretrained_models && \
+#   rm -rf /workspace/GPT-SoVITS/GPT_SoVITS/text/G2PWModel && \
+#   rm -rf /workspace/GPT-SoVITS/tools/asr/models && \
+#   rm -rf /workspace/GPT-SoVITS/tools/uvr5/uvr5_weights && \
+#   ln -s /workspace/models/pretrained_models /workspace/GPT-SoVITS/GPT_SoVITS/pretrained_models && \
+#   ln -s /workspace/models/G2PWModel /workspace/GPT-SoVITS/GPT_SoVITS/text/G2PWModel && \
+#   ln -s /workspace/models/asr_models /workspace/GPT-SoVITS/tools/asr/models && \
+#   ln -s /workspace/models/uvr5_weights /workspace/GPT-SoVITS/tools/uvr5/uvr5_weights && \
+#   exec bash"]
+# 复制模型文件到容器内（假设模型文件在宿主机的 models 目录下）
+# 请确保以下目录存在于宿主机：
+# - models/pretrained_models
+# - models/G2PWModel
+# - models/asr_models
+# - models/uvr5_weights
+COPY GPT_SoVITS/pretrained_models /workspace/GPT-SoVITS/GPT_SoVITS/pretrained_models
+COPY GPT_SoVITS/text/G2PWModel /workspace/GPT-SoVITS/GPT_SoVITS/text/G2PWModel
+COPY tools/asr/models /workspace/GPT-SoVITS/tools/asr/models
+COPY tools/uvr5/uvr5_weights /workspace/GPT-SoVITS/tools/uvr5/uvr5_weights
+
+# 不再需要创建软链接，直接启动bash
+CMD ["/bin/bash"]

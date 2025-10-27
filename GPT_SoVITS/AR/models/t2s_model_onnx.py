@@ -31,7 +31,10 @@ def logits_to_probs(
     top_p=None,
     repetition_penalty: float = 1.0,
 ):
-    previous_tokens = previous_tokens.squeeze()
+    # 修复：明确指定 squeeze 的维度，避免 TensorRT 报错
+    # TensorRT 要求在动态形状下必须显式指定 axes 参数
+    # previous_tokens 形状: (1, seq_len) -> squeeze(0) -> (seq_len,)
+    previous_tokens = previous_tokens.squeeze(0)
     if previous_tokens is not None and repetition_penalty != 1.0:
         previous_tokens = previous_tokens.long()
         score = torch.gather(logits, dim=0, index=previous_tokens)
@@ -44,13 +47,12 @@ def logits_to_probs(
 
     if top_p is not None and top_p < 1.0:
         sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-        cum_probs = torch.cumsum(
-            torch.nn.functional.softmax(
-                sorted_logits,
-                dim=-1,
-            ),
-            dim=-1,
-        )
+        # 修复：TensorRT Softmax 要求至少 2 维输入
+        # sorted_logits 是 1 维 (1025,)，需要添加 batch 维度
+        sorted_logits_2d = sorted_logits.unsqueeze(0)  # (1, 1025)
+        probs_2d = torch.nn.functional.softmax(sorted_logits_2d, dim=-1)
+        # 使用索引 [0] 而不是 squeeze(0)，避免生成新的 Squeeze 节点
+        cum_probs = torch.cumsum(probs_2d[0], dim=-1)
         sorted_indices_to_remove = cum_probs > top_p
         sorted_indices_to_remove[0] = False  # keep at least one option
         indices_to_remove = sorted_indices_to_remove.scatter(
@@ -67,7 +69,12 @@ def logits_to_probs(
         pivot = v.select(-1, -1).unsqueeze(-1)
         logits = torch.where(logits < pivot, inf_tensor_value, logits)
 
-    probs = torch.nn.functional.softmax(logits, dim=-1)
+    # 修复：TensorRT Softmax 要求至少 2 维输入
+    # logits 是 1 维 (1025,)，需要添加 batch 维度
+    logits_2d = logits.unsqueeze(0)  # (1, 1025)
+    probs_2d = torch.nn.functional.softmax(logits_2d, dim=-1)
+    # 使用索引 [0] 而不是 squeeze(0)，避免生成新的 Squeeze 节点
+    probs = probs_2d[0]
     return probs
 
 
@@ -75,7 +82,13 @@ def multinomial_sample_one_no_sync(
     probs_sort,
 ):  # Does multinomial sampling without a cuda synchronization
     q = torch.randn_like(probs_sort)
-    return torch.argmax(probs_sort / q, dim=-1, keepdim=True).to(dtype=torch.int)
+    # 修复：TensorRT ArgMax 要求至少 2 维输入
+    # probs_sort 是 1 维 (1025,)，需要添加 batch 维度
+    probs_div = probs_sort / q
+    probs_div_2d = probs_div.unsqueeze(0)  # (1, 1025)
+    result = torch.argmax(probs_div_2d, dim=-1, keepdim=True).to(dtype=torch.int)
+    # 使用索引 [0] 而不是 squeeze，避免生成新的 Squeeze 节点
+    return result[0]
 
 
 def sample(
