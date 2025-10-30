@@ -41,6 +41,7 @@ RUN apt-get update && \
     ffmpeg \
     cmake \
     make \
+    vim \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 

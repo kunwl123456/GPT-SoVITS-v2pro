@@ -47,7 +47,7 @@ client = motor.AsyncIOMotorClient(
     waitQueueMultiple=10,  # 等待队列的大小
     waitQueueTimeoutMS=10000,  # 等待队列超时时间（毫秒）
 )
-database = client.voice.voice_cache
+database = client.voice.voice_cache_test
 machine_connections = {}
 # 创建一个锁
 websocket_locks = {}
@@ -210,9 +210,9 @@ async def text2speech(form_data: TTSRequest):
     request_status[request_id] = {"status": "pending", "result": None}
 
     # 根据prompt_semantic的长度选择队列
-    if 2 <= length <= 5:
+    if 1 <= length <= 5:
         await short_request_queue.put((request_id, request_data, event))
-    elif 5 <= length <= 9:
+    elif 5 < length <= 20:
         await long_request_queue.put((request_id, request_data, event))
     else:
         print(f"Invalid length: {length}, id: {ids[0]}")
@@ -227,13 +227,6 @@ async def text2speech(form_data: TTSRequest):
     # 清理状态字典
     del request_status[request_id]
 
-    # 保存音频到本地
-    try:
-        with open("lancer.mp3", "wb") as f:
-            f.write(result)
-        print(f"✅ 音频已保存到 lancer.mp3")
-    except Exception as e:
-        print(f"⚠️ 保存音频文件失败: {e}")
 
     # 返回MP3格式的音频
     return StreamingResponse(io.BytesIO(result), media_type="audio/mpeg")

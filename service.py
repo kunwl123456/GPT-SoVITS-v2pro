@@ -21,6 +21,7 @@ from pydantic import BaseModel
 import argparse
 import traceback
 import websockets
+import yaml
 
 from GPT_SoVITS.TTS_infer_pack.text_segmentation_method import (
     get_method_names as get_cut_method_names,
@@ -45,9 +46,12 @@ cut_method_names = get_cut_method_names()
 
 
 argv = sys.argv
-
-config_path = "./GPT_SoVITS/configs/tts_infer.yaml"
-
+config_path = os.path.join(now_dir, "GPT_SoVITS", "configs", "tts_infer.yaml")
+print(f"[create_voice] 配置文件路径: {config_path}")
+print(f"[create_voice] 配置文件存在: {os.path.exists(config_path)}")
+with open(config_path, "r", encoding="utf-8") as f:
+    cfg_loaded = yaml.load(f, Loader=yaml.FullLoader)
+print(f"[create_voice] yaml.load 类型: {type(cfg_loaded)}")
 tts_config = TTS_Config(config_path)
 tts_pipeline = TTS(tts_config)
 
@@ -61,7 +65,7 @@ client = motor.AsyncIOMotorClient(
     waitQueueMultiple=10,  # 等待队列的大小
     waitQueueTimeoutMS=10000,  # 等待队列超时时间（毫秒）
 )
-database = client.voice.voice_cache
+database = client.voice.voice_cache_test
 @cached(ttl=604800)
 async def get_prompt_cache_by_id(id: str):
     # 从 MongoDB 查询数据
@@ -163,7 +167,7 @@ if __name__ == "__main__":
     # args = parser.parse_args()
 
     # 获取传入的 gateway URL
-    gateway_url ="ws://localhost:8000/ws" #args.gateway_url
+    gateway_url = "ws://localhost:8000/ws"  # args.gateway_url
 
     # 启动时主动连接到 gateway
     loop = asyncio.get_event_loop()

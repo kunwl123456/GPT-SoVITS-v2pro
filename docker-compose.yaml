@@ -26,9 +26,8 @@ services:
     build: .
     command: >
       bash -c "
-      python gateway.py &
-      python service.py --gateway-url ws://localhost:8000/ws &
-      python create_voice.py &
+      bash gateway.sh &
+      bash service.sh &
       wait
       "
     runtime: nvidia

@@ -16,6 +16,7 @@ from GPT_SoVITS.TTS_infer_pack.TTS import TTS, TTS_Config
 from GPT_SoVITS.sv import SV
 import soundfile as sf
 from torchaudio.functional import resample as torch_resample
+import yaml
 
 now_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append("%s/GPT_SoVITS" % (now_dir))
@@ -40,9 +41,14 @@ CONNECTION_STRING = f"mongodb://{DB_USERNAME}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/
 # 初始化MongoDB客户端
 mongo_client = MongoClient(CONNECTION_STRING)
 db = mongo_client.voice  # 数据库名
-collection = db.voice_cache  # 集合名（与 gateway.py 保持一致）
+collection = db.voice_cache_test  # 集合名（与 gateway.py 保持一致）
 
-config_path = "./GPT_SoVITS/configs/tts_infer.yaml"
+config_path = os.path.join(now_dir, "GPT_SoVITS", "configs", "tts_infer.yaml")
+print(f"[create_voice] 配置文件路径: {config_path}")
+print(f"[create_voice] 配置文件存在: {os.path.exists(config_path)}")
+with open(config_path, "r", encoding="utf-8") as f:
+    cfg_loaded = yaml.load(f, Loader=yaml.FullLoader)
+print(f"[create_voice] yaml.load 类型: {type(cfg_loaded)}")
 
 
 tts_config = TTS_Config(config_path)
