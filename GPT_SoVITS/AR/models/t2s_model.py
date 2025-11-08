@@ -8,6 +8,7 @@ from torch import nn
 from torch.nn import functional as F
 from torchmetrics.classification import MulticlassAccuracy
 from tqdm import tqdm
+from line_profiler import profile
 
 from AR.models.utils import (
     dpo_loss,
@@ -584,6 +585,7 @@ class Text2SemanticDecoder(nn.Module):
         targets = F.pad(y, (0, 1), value=0) + eos_id * F.pad(y_mask_int, (0, 1), value=1)
         # 错位
         return targets[:, :-1], targets
+    @profile
     def infer_panel_batch(
         self,
         x: List[

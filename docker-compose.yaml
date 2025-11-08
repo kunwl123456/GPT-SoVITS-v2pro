@@ -22,14 +22,32 @@ services:
       retries: 3
       start_period: 40s
 
-  tts-server:
+  tts-gateway:
     build: .
-    command: >
-      bash -c "
-      bash gateway.sh &
-      bash service.sh &
-      wait
-      "
+    command: bash gateway.sh
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./gateway.py:/workspace/GPT-SoVITS/gateway.py:ro
+      - ./gateway.sh:/workspace/GPT-SoVITS/gateway.sh:ro
+    networks:
+      - tts-server-network
+    restart: unless-stopped
+    environment:
+      DB_HOST: "mongodb"
+      DB_PORT: "27017"
+      DB_USERNAME: "magi-voice"
+      DB_PASSWORD: "7CysB8PneyDVfdjaRMZF"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+
+  tts-service:
+    build: .
+    command: bash -c "python3 service.py --gateway-url ws://tts-gateway:8000/ws"
     runtime: nvidia
     deploy:
       resources:
@@ -39,7 +57,6 @@ services:
               count: all
               capabilities: [gpu]
     ports:
-      - "8000:8000"
       - "4000:4000"
       - "3000:3000"
     volumes:
@@ -53,9 +70,11 @@ services:
       DB_PORT: "27017"
       DB_USERNAME: "magi-voice"
       DB_PASSWORD: "7CysB8PneyDVfdjaRMZF"
-      is_half: "False"
+      is_half: "True"
       NVIDIA_VISIBLE_DEVICES: "all"
     depends_on:
+      tts-gateway:
+        condition: service_started
       mongodb:
         condition: service_healthy
     dns:

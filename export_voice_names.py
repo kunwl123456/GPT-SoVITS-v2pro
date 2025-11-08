@@ -1,19 +1,17 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-批量创建语音数据脚本
-根据 divice_result 目录下的音频文件，自动调用 create_voice API 创建语音缓存
+导出语音文件名脚本
+根据 divice_result 目录下的音频文件，提取角色名并导出到 txt 文件
 """
 
 import os
 import re
-import requests
 from pathlib import Path
-import time
 
 # 配置
-API_URL = "http://localhost:4000/create_voice"
 BASE_DIR = "./divice_result"
+OUTPUT_FILE = "voice_names_list.txt"
 
 def extract_character_name(filename):
     """
@@ -47,47 +45,17 @@ def create_voice_id(category, character):
     """
     return clean_voice_id(character)
 
-def upload_audio(voice_id, audio_path):
-    """
-    上传音频文件到 create_voice API，等待处理完成
-    """
-    try:
-        with open(audio_path, 'rb') as f:
-            files = {'file': (os.path.basename(audio_path), f, 'audio/wav')}
-            data = {'id': voice_id}
-            
-            print(f"正在上传: {voice_id} <- {os.path.basename(audio_path)}")
-            
-            # 设置较长的超时时间，等待服务器完成语音识别和特征提取
-            response = requests.post(API_URL, files=files, data=data, timeout=600)
-            
-            if response.status_code == 200:
-                result = response.json()
-                print(f"✓ 成功: {voice_id}")
-                if 'message' in result:
-                    print(f"  响应: {result['message']}")
-                return True
-            else:
-                print(f"✗ 失败: {voice_id} - HTTP {response.status_code}")
-                print(f"  错误: {response.text[:200]}")
-                return False
-    except requests.exceptions.Timeout:
-        print(f"✗ 超时: {voice_id} - 请求超过 10 分钟")
-        return False
-    except Exception as e:
-        print(f"✗ 错误: {voice_id} - {str(e)}")
-        return False
-
 def main():
     """
-    主函数：遍历所有分类目录下的音频文件，批量创建语音数据
+    主函数：遍历所有分类目录下的音频文件，导出角色名列表
     """
     if not os.path.exists(BASE_DIR):
         print(f"错误: 目录 {BASE_DIR} 不存在")
         return
     
-    success_count = 0
-    fail_count = 0
+    # 用于存储所有结果
+    all_results = []
+    total_count = 0
     
     # 遍历所有分类目录 (teen_male, teen_female, child_male, child_female, etc.)
     for category_dir in sorted(os.listdir(BASE_DIR)):
@@ -109,36 +77,60 @@ def main():
         
         print(f"找到 {len(wav_files)} 个音频文件\n")
         
+        # 分类结果
+        category_results = []
+        category_results.append(f"\n{'='*60}")
+        category_results.append(f"分类: {category_dir}")
+        category_results.append(f"{'='*60}\n")
+        
         # 处理每个音频文件
         for wav_file in wav_files:
-            audio_file = os.path.join(category_path, wav_file)
-            
             # 从文件名提取角色名
             character_name = extract_character_name(wav_file)
             
             # 生成纯英文 voice_id（无空格无标点）
             voice_id = create_voice_id(category_dir, character_name)
             
-            # 显示原始名称和清理后的ID
-            print(f"角色: {character_name} -> ID: {voice_id}")
+            # 格式化输出行
+            line = f"{voice_id:30s} | 原名: {character_name:35s} | 文件: {wav_file}"
+            category_results.append(line)
             
-            # 上传并等待完成
-            if upload_audio(voice_id, audio_file):
-                success_count += 1
-                print(f"  等待 3 秒后继续...\n")
-                time.sleep(3)  # 等待上一个角色处理完成
-            else:
-                fail_count += 1
-                time.sleep(1)  # 失败也稍作等待
-                print()
+            # 显示到控制台
+            print(f"  {voice_id:25s} <- {character_name}")
+            
+            total_count += 1
+        
+        # 添加分类结果到总结果
+        all_results.extend(category_results)
+        all_results.append("")  # 空行分隔
+    
+    # 写入文件
+    with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
+        # 写入头部
+        f.write("="*80 + "\n")
+        f.write("语音角色名称列表\n")
+        f.write(f"总计: {total_count} 个语音文件\n")
+        f.write("="*80 + "\n")
+        
+        # 写入所有结果
+        for line in all_results:
+            f.write(line + "\n")
+        
+        # 写入尾部统计
+        f.write("\n" + "="*80 + "\n")
+        f.write(f"导出完成! 共 {total_count} 个语音角色\n")
+        f.write("="*80 + "\n")
     
     # 统计
     print(f"\n{'='*60}")
-    print(f"批量创建完成!")
-    print(f"成功: {success_count} 个")
-    print(f"失败: {fail_count} 个")
+    print(f"导出完成!")
+    print(f"共处理: {total_count} 个语音文件")
+    print(f"输出文件: {OUTPUT_FILE}")
     print(f"{'='*60}")
 
 if __name__ == "__main__":
     main()
+
+
+
 

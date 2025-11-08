@@ -956,7 +956,7 @@ class TTS:
         # self.prompt_cache["prompt_semantic"] = prompt_semantic
         return prompt_semantics
     
-    
+    @profile
     def divide_batch(self, data: list | torch.LongTensor, idx: list):
         """
         Divide the batch into multiple groups according to the idx.
@@ -1000,6 +1000,7 @@ class TTS:
             lengths.append(math.ceil(math.ceil(audio_lengths[i] / 16000 * 50) / 2))
         return [codes[i, :, :length].unsqueeze(0) for i, length in enumerate(lengths)]
 
+    @profile
     def batch_sequences(self, sequences: List[torch.Tensor], axis: int = 0, pad_value: int = 0, max_length: int = None):
         seq = sequences[0]
         ndim = seq.dim()
@@ -1525,6 +1526,7 @@ class TTS:
             # send_status = asyncio.create_task(websocket.send(json.dumps({"status": "free", "request_id": request_id})))
             # await asyncio.sleep(0)
             audio_list = []
+            @profile
             def process_audio_fragment(fragment, sr, speed_factor, fragment_interval):
                 return self.audio_postprocess(
                     [fragment], sr, None, speed_factor, False, fragment_interval

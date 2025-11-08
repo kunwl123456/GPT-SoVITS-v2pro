@@ -62,8 +62,8 @@ cnhubert_base_path = os.environ.get(
 bert_path = os.environ.get(
     "bert_path", "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large"
 )
-tokenizer = AutoTokenizer.from_pretrained(bert_path)
-bert_model = AutoModelForMaskedLM.from_pretrained(bert_path)
+tokenizer = AutoTokenizer.from_pretrained(bert_path, local_files_only=True)
+bert_model = AutoModelForMaskedLM.from_pretrained(bert_path, local_files_only=True)
 if is_half == True:
     bert_model = bert_model.half().to(device)
 else:
@@ -76,7 +76,8 @@ def get_bert_feature(text, word2ph):
         for i in inputs:
             inputs[i] = inputs[i].to(device)
         res = bert_model(**inputs, output_hidden_states=True)
-        res = torch.cat(res["hidden_states"][-3:-2], -1)[0].cpu()[1:-1]
+        # 修复：不要移到CPU，保持在GPU上以避免设备不匹配
+        res = torch.cat(res["hidden_states"][-3:-2], -1)[0][1:-1]
     assert len(word2ph) == len(text)
     phone_level_feature = []
     for i in range(len(word2ph)):
@@ -167,6 +168,7 @@ class TextPreprocessor:
     #     print(i18n("实际输入的目标文本(切句后):"))
     #     print(texts)
     #     return texts
+    @profile
     def pre_seg_text(self, texts: List[str], lang: str, text_split_method: str):
         result = []
         for text in texts:
@@ -356,7 +358,8 @@ class TextPreprocessor:
             for i in inputs:
                 inputs[i] = inputs[i].to(self.device)
             res = self.bert_model(**inputs, output_hidden_states=True)
-            res = torch.cat(res["hidden_states"][-3:-2], -1)[0].cpu()[1:-1]
+            # 修复：不要移到CPU，保持在GPU上以避免设备不匹配
+            res = torch.cat(res["hidden_states"][-3:-2], -1)[0][1:-1]
         assert len(word2ph) == len(text)
         phone_level_feature = []
         for i in range(len(word2ph)):
@@ -418,7 +421,7 @@ class TextPreprocessor:
         phones = cleaned_text_to_sequence(phones)
         return phones, word2ph, norm_text
     
-    
+    @profile
     def segment_and_extract_feature_for_text(
         self, texts: list[list[str]], language: str, is_prompt: bool = False
     ) -> Tuple[list, torch.Tensor, str, list[int]]:
@@ -563,9 +566,11 @@ class TextPreprocessor:
                 zh_word2ph.append(word2ph[i])
                 features.append(None)
             else:
+                # 修复：使用与bert_model相同的精度，避免精度不匹配
+                dtype = next(self.bert_model.parameters()).dtype
                 feature = torch.zeros(
                     (1024, len(phones[i])),
-                    dtype=torch.float32,
+                    dtype=dtype,
                 ).to(self.device)
                 features.append(feature)
         if len(zh_norm_text) > 0:

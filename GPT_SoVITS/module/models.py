@@ -23,6 +23,7 @@ from text import symbols2 as symbols_v2
 from torch.cuda.amp import autocast
 import contextlib
 import random
+from line_profiler import profile
 
 
 class StochasticDurationPredictor(nn.Module):
@@ -1005,6 +1006,7 @@ class SynthesizerTrn(nn.Module):
         return o
     
     @torch.no_grad()
+    @profile
     def batched_decode(
         self, y, y_lengths, text, text_lengths, refers_batch, speed=1, noise_scale=0.5
     ):

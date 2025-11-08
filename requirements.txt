@@ -2,7 +2,7 @@
 --extra-index-url https://download.pytorch.org/whl/cu128
 
 --no-binary=opencc
-numpy<2.0
+numpy>=2.0,<2.3
 scipy
 tensorboard
 librosa==0.10.2
