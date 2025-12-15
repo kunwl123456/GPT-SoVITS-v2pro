@@ -161,7 +161,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--gateway-url",
         type=str,
-        default="ws://localhost:8000/ws",
+        default="ws://localhost:7000/ws",
         help="The WebSocket URL of the gateway to connect to"
     )
     args = parser.parse_args()
