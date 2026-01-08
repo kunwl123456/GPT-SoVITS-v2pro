@@ -59,7 +59,10 @@ class MachineModel(BaseModel):
 
 @aiocache.cached(ttl=604800)
 async def get_length(id: str):
-    return (await database.find_one({"_id": id}, projection={"length": 1}))["length"]
+    doc = await database.find_one({"_id": id}, projection={"length": 1})
+    if doc is None:
+        raise HTTPException(status_code=404, detail=f"Voice ID '{id}' not found in database. Please create the voice first using /create_voice endpoint.")
+    return doc["length"]
 
 
 @app.on_event("startup")
@@ -212,11 +215,11 @@ async def text2speech(form_data: TTSRequest):
     # 根据prompt_semantic的长度选择队列
     if 1 <= length <= 5:
         await short_request_queue.put((request_id, request_data, event))
-    elif 5 < length <= 20:
+    elif 5 < length <= 60:  # 扩大到60秒,支持更长的参考音频
         await long_request_queue.put((request_id, request_data, event))
     else:
         print(f"Invalid length: {length}, id: {ids[0]}")
-        raise HTTPException(status_code=400, detail="Invalid length")
+        raise HTTPException(status_code=400, detail=f"Invalid length: {length}. Supported range: 1-60 seconds")
 
     # 等待请求处理完成
     await event.wait()
