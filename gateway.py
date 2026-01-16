@@ -87,7 +87,13 @@ async def process_request(batch_data, batch_requests, queue, websocket, message_
             await websocket.send_json(batch_data)
 
             # 从消息队列中获取机器的响应
-            response_data = await asyncio.wait_for(message_queue.get(), timeout=80.0)
+            # 增加超时时间：长文本（如《将进酒》14句）可能需要更长时间
+            response_data = await asyncio.wait_for(message_queue.get(), timeout=180.0)
+            
+            # 检查消息类型
+            if "bytes" not in response_data:
+                raise Exception(f"收到的消息格式不正确: {list(response_data.keys())}")
+            
             audios = zlib.decompress(response_data["bytes"])
             audios = pickle.loads(audios)
             audios = audios[1:]
@@ -169,9 +175,14 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception:
         print(traceback.format_exc())
     finally:
-        # 连接关闭时从池子中移除
-        del machine_connections[websocket]
-        await websocket.close()
+        # 连接关闭时从池子中移除（如果存在）
+        if websocket in machine_connections:
+            del machine_connections[websocket]
+        # 安全关闭 WebSocket
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 class TTSRequest(BaseModel):
