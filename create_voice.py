@@ -245,6 +245,32 @@ async def create_voice(id: str = Form(...), file: UploadFile = File(...)):
 
     # 应用响度平衡
     balanced_audio = balance_loudness(audio_np)
+    
+    # 截断音频：只使用前10秒作为参考音频
+    max_duration_seconds = 10.0
+    max_samples = int(sample_rate * max_duration_seconds)
+    
+    if len(balanced_audio) > max_samples:
+        print(f"警告：参考音频长度 {len(balanced_audio)/sample_rate:.2f}秒，超过推荐的{max_duration_seconds}秒")
+        print(f"将截取能量最高的 {max_duration_seconds} 秒片段作为参考音频")
+        
+        # 找到能量最高的10秒片段
+        window_size = max_samples
+        step_size = sample_rate  # 每秒滑动一次
+        max_energy = -1
+        best_start = 0
+        
+        for start in range(0, len(balanced_audio) - window_size + 1, step_size):
+            segment = balanced_audio[start:start + window_size]
+            energy = np.sum(segment ** 2)
+            if energy > max_energy:
+                max_energy = energy
+                best_start = start
+        
+        print(f"选择的片段时间范围: {best_start/sample_rate:.2f}s - {(best_start+window_size)/sample_rate:.2f}s")
+        balanced_audio = balanced_audio[best_start:best_start + window_size]
+    else:
+        print(f"参考音频长度 {len(balanced_audio)/sample_rate:.2f}秒，符合要求")
 
     # 将平衡后的音频转回字节数据
     balanced_audio_bytes = io.BytesIO()
