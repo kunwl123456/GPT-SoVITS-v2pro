@@ -462,12 +462,19 @@ class TextPreprocessor:
             langlist_1sentence = []
             data_idx = []
             for i, text in enumerate(request):
-                # text = "你好This is a test"
+                # 临时替换所有类型的引号，避免 LangSegment 截断文本
+                # 使用罕见汉字作为占位符（不会被text_normalize过滤）
+                text_safe = text.replace("\u201c", "〔").replace("\u201d", "〕")  # 全角 " " → 〔〕
+                text_safe = text_safe.replace('"', "〔")  # 半角 " → 〔
+                text_safe = text_safe.replace("\u2018", "〈").replace("\u2019", "〉")  # 全角 ' ' → 〈〉
+                text_safe = text_safe.replace("'", "〈")  # 半角 ' → 〈
+                
                 textlist = []
                 langlist = []
                 LangSegment.setfilters(["zh", "ja", "en", "ko"])
                 if language == "auto":
-                    for tmp in LangSegment.getTexts(text):
+                    for tmp in LangSegment.getTexts(text_safe):
+                        # 暂时不恢复引号，保留占位符
                         langlist.append(tmp["lang"])
                         textlist.append(tmp["text"])
                         data_idx.append(i)

@@ -280,6 +280,8 @@ async def create_voice(id: str = Form(...), file: UploadFile = File(...)):
     # 使用本地 faster-whisper 进行语音转文字
     # 保存临时音频文件
     temp_audio_path = f"temp_audio_{id}.wav"
+    detected_language = "zh"  # 默认中文
+    
     try:
         sf.write(temp_audio_path, balanced_audio, sample_rate)
         
@@ -287,10 +289,14 @@ async def create_voice(id: str = Form(...), file: UploadFile = File(...)):
         print(f"正在识别语音: {temp_audio_path}")
         segments, info = whisper_model.transcribe(
             temp_audio_path, 
-            language="zh",  # 指定中文
+            language=None,  # 自动检测语言
             beam_size=5,    # 提高准确度
             vad_filter=True # 使用VAD过滤静音
         )
+        
+        # 获取检测到的语言
+        detected_language = info.language
+        print(f"检测到的语言: {detected_language} (置信度: {info.language_probability:.2%})")
         
         # 拼接所有识别片段
         transcript_text = "".join([segment.text for segment in segments])
@@ -301,9 +307,13 @@ async def create_voice(id: str = Form(...), file: UploadFile = File(...)):
         if os.path.exists(temp_audio_path):
             os.remove(temp_audio_path)
 
-    # 简体化文本
-    prompt_text = simplify_chinese(transcript_text)
-    print(f"简体化文本: {prompt_text}")
+    # 只对中文进行简体化，其他语言保持原样
+    if detected_language == "zh":
+        prompt_text = simplify_chinese(transcript_text)
+        print(f"简体化文本: {prompt_text}")
+    else:
+        prompt_text = transcript_text
+        print(f"保持原始文本: {prompt_text} (语言: {detected_language})")
     # 处理音频和文本，获取必要的特征
     ref_audios_batch = [[balanced_audio_data]]  # 使用平衡后的音频数据
     prompt_texts_batch = [[prompt_text]]

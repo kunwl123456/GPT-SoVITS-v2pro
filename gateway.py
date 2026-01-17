@@ -126,6 +126,16 @@ async def process_request(batch_data, batch_requests, queue, websocket, message_
                 )
 
 
+def get_param_key(request_data):
+    """提取请求的参数特征，用于分组"""
+    return (
+        request_data.get("speed_factor", 1.0),
+        request_data.get("temperature", 1.0),
+        request_data.get("top_k", 5),
+        request_data.get("top_p", 1.0),
+    )
+
+
 async def handle_queue():
     while True:
         for queue in [short_request_queue, long_request_queue]:
@@ -134,27 +144,57 @@ async def handle_queue():
                 del machine_connections[websocket]
 
                 batch_size = 48
-                batch_requests = []
+                all_requests = []
 
-                while len(batch_requests) < batch_size:
+                # 从队列中取出最多batch_size个请求
+                while len(all_requests) < batch_size:
                     try:
                         request = queue.get_nowait()
-                        batch_requests.append(request)
+                        all_requests.append(request)
                     except asyncio.QueueEmpty:
                         break
 
-                request_id = str(uuid.uuid4())
-                batch_data = {
-                    "request_id": request_id,
-                    "texts": [req[1]["text"] for req in batch_requests],
-                    "all_ids": [req[1]["ids"] for req in batch_requests],
-                }
-                print(f"一次性处理{len(batch_requests)}个请求")
-                asyncio.create_task(
-                    process_request(
-                        batch_data, batch_requests, queue, websocket, message_queue
+                # 按参数分组
+                param_groups = {}
+                for request in all_requests:
+                    key = get_param_key(request[1])
+                    if key not in param_groups:
+                        param_groups[key] = []
+                    param_groups[key].append(request)
+
+                # 处理第一个参数组（最大的组）
+                # 其他组放回队列
+                sorted_groups = sorted(param_groups.items(), key=lambda x: len(x[1]), reverse=True)
+                
+                if sorted_groups:
+                    # 处理最大的组
+                    first_param_key, batch_requests = sorted_groups[0]
+                    
+                    request_id = str(uuid.uuid4())
+                    batch_data = {
+                        "request_id": request_id,
+                        "texts": [req[1]["text"] for req in batch_requests],
+                        "all_ids": [req[1]["ids"] for req in batch_requests],
+                        "speed_factor": first_param_key[0],
+                        "temperature": first_param_key[1],
+                        "top_k": first_param_key[2],
+                        "top_p": first_param_key[3],
+                    }
+                    
+                    print(f"一次性处理{len(batch_requests)}个请求 (参数: speed={batch_data['speed_factor']}, temp={batch_data['temperature']}, top_k={batch_data['top_k']}, top_p={batch_data['top_p']})")
+                    if len(sorted_groups) > 1:
+                        print(f"  发现{len(sorted_groups)}个不同参数组，其他{len(all_requests)-len(batch_requests)}个请求将在下一批处理")
+                    
+                    asyncio.create_task(
+                        process_request(
+                            batch_data, batch_requests, queue, websocket, message_queue
+                        )
                     )
-                )
+                    
+                    # 将其他组的请求放回队列
+                    for _, requests in sorted_groups[1:]:
+                        for req in requests:
+                            await queue.put(req)
 
         await asyncio.sleep(0.01)
 
@@ -184,10 +224,13 @@ async def websocket_endpoint(websocket: WebSocket):
         except Exception:
             pass
 
-
 class TTSRequest(BaseModel):
     text: str
     ids: List[str]
+    speed_factor: float = 1.0
+    temperature: float = 1.0
+    top_k: int = 5
+    top_p: float = 1.0
 
 def replace_words(text: str):
     text = "." + text
@@ -213,6 +256,10 @@ async def text2speech(form_data: TTSRequest):
     request_data = {
         "text": text,
         "ids": ids,
+        "speed_factor": form_data.speed_factor,
+        "temperature": form_data.temperature,
+        "top_k": form_data.top_k,
+        "top_p": form_data.top_p,
     }
 
     request_id = str(uuid.uuid4())
