@@ -1095,7 +1095,16 @@ class SynthesizerTrn(nn.Module):
         #   comment: 感觉没问题
         o = self.dec(z_masked, g=ge)
         upsample_rate = int(math.prod(self.upsample_rates))
-        o_lengths = y_lengths * upsample_rate
+        
+        # 当speed != 1时，y_mask已经被enc_p调整，需要从y_mask重新计算实际长度
+        if speed != 1:
+            # y_mask shape: [batch, 1, adjusted_length]
+            # 计算每个batch实际的非零长度
+            y_lengths_adjusted = y_mask.squeeze(1).sum(dim=1).long()
+            o_lengths = y_lengths_adjusted * upsample_rate
+            print(f"[DEBUG][batched_decode] speed={speed}, 原始y_lengths={y_lengths[:3].tolist()}, 调整后y_lengths={y_lengths_adjusted[:3].tolist()}")
+        else:
+            o_lengths = y_lengths * upsample_rate
         
         # o_list = torch.split(o, o_lengths.tolist(), dim=2)
         # o_list = [o[i, 0,:length] for i, length in enumerate(o_lengths)]
