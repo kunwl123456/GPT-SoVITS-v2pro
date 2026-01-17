@@ -1518,6 +1518,7 @@ class TTS:
                     batch_phones_,
                     batch_phones_len,
                     ge_batch, # ! 这个可以缓存
+                    speed=speed_factor,
                 )
                 batch_audio_fragments = self.divide_batch(batch_audio_fragment, data_idx)
 
@@ -1829,9 +1830,11 @@ class TTS:
                 #         pred_semantic, pred_semantic_len, batch_phones, batch_phones_len,refer_audio_spec
                 #     ))
                 print(f"############ {i18n('合成音频')} ############")
+                print(f"[DEBUG] ===== 当前 speed_factor = {speed_factor} =====")
                 if not self.configs.use_vocoder:
                     if speed_factor == 1.0:
                         print(f"{i18n('并行合成中')}...")
+                        print(f"[DEBUG] 使用并行推理分支 (speed=1.0)")
                         # ## vits并行推理 method 2
                         pred_semantic_list = [item[-idx:] for item, idx in zip(pred_semantic_list, idx_list)]
                         upsample_rate = math.prod(self.vits_model.upsample_rates)
@@ -1859,6 +1862,7 @@ class TTS:
                         ]
                     else:
                         # ## vits串行推理
+                        print(f"[DEBUG] 使用串行推理分支 (speed={speed_factor})")
                         for i, idx in enumerate(tqdm(idx_list)):
                             phones = batch_phones[i].unsqueeze(0).to(self.configs.device)
                             _pred_semantic = (
