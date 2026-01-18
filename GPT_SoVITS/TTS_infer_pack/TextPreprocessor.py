@@ -39,7 +39,7 @@ def merge_short_text_in_array(texts: str, threshold: int) -> list:
     text = ""
     for ele in texts:
         text += ele
-        if len(text) >= threshold:
+        if len(text) >= threshold or ele.endswith(("？", "?", "！", "!")) or text.endswith(("？", "?", "！", "!")):
             result.append(text)
             text = ""
     if len(text) > 0:
@@ -172,7 +172,15 @@ class TextPreprocessor:
     def pre_seg_text(self, texts: List[str], lang: str, text_split_method: str):
         result = []
         for text in texts:
+            if text is None:
+                continue
+            # Strip zero-width chars early so segmentation and logging are clean.
+            text = re.sub(r"[\u200b\u200c\u200d\u2060\ufeff]", "", text)
+            # Normalize common quote chars that can interfere with segmentation.
+            text = text.replace("“", "").replace("”", "").replace("‘", "").replace("’", "")
             text = text.strip("\n")
+            if len(text) == 0:
+                continue
             if text[0] not in splits and len(get_first(text)) < 4:
                 text = "。" + text if lang != "en" else "." + text
             print(i18n("实际输入的目标文本:"))
@@ -414,6 +422,8 @@ class TextPreprocessor:
             if text in [None, " ", ""]:
                 pass
             else:
+                # Remove zero-width chars that can break segmentation or pauses.
+                text = re.sub(r"[\u200b\u200c\u200d\u2060\ufeff]", "", text)
                 _text.append(text)
         return _text
     def clean_text_inf(self,text:str, language:str):
@@ -478,12 +488,20 @@ class TextPreprocessor:
                         langlist.append(tmp["lang"])
                         textlist.append(tmp["text"])
                         data_idx.append(i)
+                    if len(textlist) == 0:
+                        langlist.append("zh")
+                        textlist.append(text)
+                        data_idx.append(i)
                 elif language == "auto_yue":
                     for tmp in LangSegment.getTexts(text):
                         if tmp["lang"] == "zh":
                             tmp["lang"] = "yue"
                         langlist.append(tmp["lang"])
                         textlist.append(tmp["text"])
+                        data_idx.append(i)
+                    if len(textlist) == 0:
+                        langlist.append("yue")
+                        textlist.append(text)
                         data_idx.append(i)
                 else:
                     for tmp in LangSegment.getTexts(text):
@@ -493,6 +511,10 @@ class TextPreprocessor:
                             # 因无法区别中日韩文汉字,以用户输入为准
                             langlist.append(language)
                         textlist.append(tmp["text"])
+                        data_idx.append(i)
+                    if len(textlist) == 0:
+                        langlist.append(language)
+                        textlist.append(text)
                         data_idx.append(i)
                 textlist_1sentence.extend(textlist)
                 langlist_1sentence.extend(langlist)
