@@ -133,6 +133,7 @@ def get_param_key(request_data):
         request_data.get("temperature", 1.0),
         request_data.get("top_k", 5),
         request_data.get("top_p", 1.0),
+        request_data.get("volume", 1.0),
     )
 
 
@@ -179,9 +180,10 @@ async def handle_queue():
                         "temperature": first_param_key[1],
                         "top_k": first_param_key[2],
                         "top_p": first_param_key[3],
+                        "volume": first_param_key[4],
                     }
                     
-                    print(f"一次性处理{len(batch_requests)}个请求 (参数: speed={batch_data['speed_factor']}, temp={batch_data['temperature']}, top_k={batch_data['top_k']}, top_p={batch_data['top_p']})")
+                    print(f"一次性处理{len(batch_requests)}个请求 (参数: speed={batch_data['speed_factor']}, temp={batch_data['temperature']}, top_k={batch_data['top_k']}, top_p={batch_data['top_p']}, volume={batch_data['volume']})")
                     if len(sorted_groups) > 1:
                         print(f"  发现{len(sorted_groups)}个不同参数组，其他{len(all_requests)-len(batch_requests)}个请求将在下一批处理")
                     
@@ -231,6 +233,7 @@ class TTSRequest(BaseModel):
     temperature: float = 1.0
     top_k: int = 5
     top_p: float = 1.0
+    volume: float = 1.0
 
 def replace_words(text: str):
     text = "." + text
@@ -260,6 +263,7 @@ async def text2speech(form_data: TTSRequest):
         "temperature": form_data.temperature,
         "top_k": form_data.top_k,
         "top_p": form_data.top_p,
+        "volume": form_data.volume,
     }
 
     request_id = str(uuid.uuid4())

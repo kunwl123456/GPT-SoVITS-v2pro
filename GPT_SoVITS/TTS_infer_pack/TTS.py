@@ -1323,7 +1323,8 @@ class TTS:
                     "fragment_interval":0.3,      # float. to control the interval of the audio fragment.
                     "seed": -1,                   # int. random seed for reproducibility.
                     "parallel_infer": True,       # bool. whether to use parallel inference.
-                    "repetition_penalty": 1.35    # float. repetition penalty for T2S model.
+                    "repetition_penalty": 1.35,   # float. repetition penalty for T2S model.
+                    "volume": 1.0                # float. output volume gain.
                 }
         returns:
             Tuple[int, np.ndarray]: sampling rate and audio data.
@@ -1342,6 +1343,7 @@ class TTS:
         speed_factor = inputs.get("speed_factor", 1.0)
         fragment_interval = inputs.get("fragment_interval", 0.3)
         repetition_penalty = inputs.get("repetition_penalty", 1.2)
+        volume = inputs.get("volume", 1.0)
 
         seed = inputs.get("seed", -1)
         seed = seed if seed else -1
@@ -1528,9 +1530,9 @@ class TTS:
             # await asyncio.sleep(0)
             audio_list = []
             @profile
-            def process_audio_fragment(fragment, sr, speed_factor, fragment_interval):
+            def process_audio_fragment(fragment, sr, speed_factor, fragment_interval, volume):
                 return self.audio_postprocess(
-                    [fragment], sr, None, speed_factor, False, fragment_interval
+                    [fragment], sr, None, speed_factor, False, fragment_interval, volume
                 )
 
             with ThreadPoolExecutor() as executor:
@@ -1541,6 +1543,7 @@ class TTS:
                             self.configs.sampling_rate,
                             speed_factor,
                             fragment_interval,
+                            volume,
                         ),
                         batch_audio_fragments,
                     )
@@ -2017,6 +2020,7 @@ class TTS:
         speed_factor: float = 1.0,
         split_bucket: bool = True,
         fragment_interval: float = 0.3,
+        volume: float = 1.0,
     ) -> bytes:
         zero_wav = torch.zeros(
             int(self.configs.sampling_rate * fragment_interval),
@@ -2035,6 +2039,8 @@ class TTS:
                 audio_fragment = audio_fragment.cpu().numpy()
                 processed_audio.append(audio_fragment)
         audio = np.concatenate(processed_audio, 0)
+        if volume != 1.0:
+            audio = np.clip(audio * float(volume), -1.0, 1.0)
         # 将音频转换为16位整数格式
         audio = (audio * 32768).astype(np.int16)
         # 使用 pydub 将音频保存为 MP3 格式
