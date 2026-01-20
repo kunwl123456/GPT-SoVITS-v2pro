@@ -172,15 +172,7 @@ class TextPreprocessor:
     def pre_seg_text(self, texts: List[str], lang: str, text_split_method: str):
         result = []
         for text in texts:
-            if text is None:
-                continue
-            # Strip zero-width chars early so segmentation and logging are clean.
-            text = re.sub(r"[\u200b\u200c\u200d\u2060\ufeff]", "", text)
-            # Normalize common quote chars that can interfere with segmentation.
-            text = text.replace("“", "").replace("”", "").replace("‘", "").replace("’", "")
             text = text.strip("\n")
-            if len(text) == 0:
-                continue
             if text[0] not in splits and len(get_first(text)) < 4:
                 text = "。" + text if lang != "en" else "." + text
             print(i18n("实际输入的目标文本:"))
@@ -472,25 +464,14 @@ class TextPreprocessor:
             langlist_1sentence = []
             data_idx = []
             for i, text in enumerate(request):
-                # 临时替换所有类型的引号，避免 LangSegment 截断文本
-                # 使用罕见汉字作为占位符（不会被text_normalize过滤）
-                text_safe = text.replace("\u201c", "〔").replace("\u201d", "〕")  # 全角 " " → 〔〕
-                text_safe = text_safe.replace('"', "〔")  # 半角 " → 〔
-                text_safe = text_safe.replace("\u2018", "〈").replace("\u2019", "〉")  # 全角 ' ' → 〈〉
-                text_safe = text_safe.replace("'", "〈")  # 半角 ' → 〈
-                
+                # text = "你好This is a test"
                 textlist = []
                 langlist = []
                 LangSegment.setfilters(["zh", "ja", "en", "ko"])
                 if language == "auto":
-                    for tmp in LangSegment.getTexts(text_safe):
-                        # 暂时不恢复引号，保留占位符
+                    for tmp in LangSegment.getTexts(text):
                         langlist.append(tmp["lang"])
                         textlist.append(tmp["text"])
-                        data_idx.append(i)
-                    if len(textlist) == 0:
-                        langlist.append("zh")
-                        textlist.append(text)
                         data_idx.append(i)
                 elif language == "auto_yue":
                     for tmp in LangSegment.getTexts(text):
@@ -498,10 +479,6 @@ class TextPreprocessor:
                             tmp["lang"] = "yue"
                         langlist.append(tmp["lang"])
                         textlist.append(tmp["text"])
-                        data_idx.append(i)
-                    if len(textlist) == 0:
-                        langlist.append("yue")
-                        textlist.append(text)
                         data_idx.append(i)
                 else:
                     for tmp in LangSegment.getTexts(text):
@@ -511,10 +488,6 @@ class TextPreprocessor:
                             # 因无法区别中日韩文汉字,以用户输入为准
                             langlist.append(language)
                         textlist.append(tmp["text"])
-                        data_idx.append(i)
-                    if len(textlist) == 0:
-                        langlist.append(language)
-                        textlist.append(text)
                         data_idx.append(i)
                 textlist_1sentence.extend(textlist)
                 langlist_1sentence.extend(langlist)

@@ -320,10 +320,6 @@ def text_normalize(text):
     dest_text = ""
     for sentence in sentences:
         dest_text += replace_punctuation(sentence)
-    # 恢复占位符为实际引号（在 LangSegment 阶段临时替换的）
-    # text_normalize 会把引号过滤掉，所以这里恢复后直接返回（不再被过滤）
-    dest_text = dest_text.replace("〔", "").replace("〕", "")  # 直接删除，因为引号会影响发音
-    dest_text = dest_text.replace("〈", "").replace("〉", "")
 
     # 避免重复标点引起的参考泄露
     dest_text = replace_consecutive_punctuation(dest_text)

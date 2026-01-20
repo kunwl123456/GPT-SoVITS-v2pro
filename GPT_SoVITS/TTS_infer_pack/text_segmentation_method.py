@@ -125,12 +125,6 @@ def cut2(inp):
     for i in range(len(inps)):
         summ += len(inps[i])
         tmp_str += inps[i]
-        # Force a split after question/exclamation to preserve short utterances.
-        if inps[i].endswith(("？", "?", "！", "!")):
-            summ = 0
-            opts.append(tmp_str)
-            tmp_str = ""
-            continue
         if summ > 50:
             summ = 0
             opts.append(tmp_str)
