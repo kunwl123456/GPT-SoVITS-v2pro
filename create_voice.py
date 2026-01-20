@@ -17,7 +17,6 @@ from GPT_SoVITS.sv import SV
 import soundfile as sf
 from torchaudio.functional import resample as torch_resample
 import yaml
-
 now_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append("%s/GPT_SoVITS" % (now_dir))
 
@@ -49,8 +48,6 @@ print(f"[create_voice] 配置文件存在: {os.path.exists(config_path)}")
 with open(config_path, "r", encoding="utf-8") as f:
     cfg_loaded = yaml.load(f, Loader=yaml.FullLoader)
 print(f"[create_voice] yaml.load 类型: {type(cfg_loaded)}")
-
-
 tts_config = TTS_Config(config_path)
 # 初始化TTS模型
 tts = TTS(tts_config)
@@ -122,119 +119,6 @@ def balance_loudness(audio, target_loudness=-23.0):
 
     return balanced_audio
 
-
-def compute_sv_embedding_with_segmentation(
-    audio: np.ndarray,
-    sample_rate: int,
-    sv_model: SV,
-    device: str,
-    is_half: bool,
-    max_duration: int = 60
-) -> torch.Tensor:
-    """
-    计算 Speaker Voice Embedding，支持长音频分段处理
-    
-    Args:
-        audio: 输入音频数组 (numpy array)
-        sample_rate: 采样率
-        sv_model: SV 模型实例
-        device: 设备 (cuda/cpu)
-        is_half: 是否使用半精度
-        max_duration: 支持的最大时长(秒)，默认60秒
-    
-    Returns:
-        torch.Tensor: Speaker embedding [1, 20480]
-    """
-    # 确保音频是numpy数组
-    if isinstance(audio, torch.Tensor):
-        audio = audio.cpu().numpy()
-    
-    # 确保音频是1维数组
-    if len(audio.shape) > 1:
-        # 如果是多声道,取第一个声道
-        if audio.shape[0] < audio.shape[1]:
-            audio = audio[0]  # shape: (channels, samples)
-        else:
-            audio = audio[:, 0]  # shape: (samples, channels)
-    
-    print(f"输入音频shape: {audio.shape}, 采样率: {sample_rate}, 音频长度: {len(audio)}")
-    
-    # 将音频转换为16k用于SV模型
-    audio_16k = torch.FloatTensor(audio)
-    if len(audio_16k.shape) == 1:
-        audio_16k = audio_16k.unsqueeze(0)  # [1, T]
-    
-    if sample_rate != 16000:
-        audio_16k = torch_resample(audio_16k, sample_rate, 16000)
-    
-    total_duration = audio_16k.shape[1] / 16000
-    print(f"音频时长: {total_duration:.2f}秒")
-    
-    # 分段处理长音频,支持最长60秒
-    segment_length = 16000 * 10  # 每段10秒
-    
-    if audio_16k.shape[1] > segment_length:
-        print(f"音频较长,使用分段融合策略提取 SV embedding")
-        
-        # 计算每秒的能量
-        audio_np = audio_16k.squeeze().cpu().numpy()
-        step_size = 16000  # 每秒计算一次能量
-        
-        # 找到能量最高的3个不重叠的10秒片段
-        num_segments = min(3, max(1, int(total_duration / 10)))
-        print(f"将提取 {num_segments} 个高能量片段")
-        
-        sv_embeddings = []
-        selected_starts = []
-        
-        # 使用贪心算法选择不重叠的高能量片段
-        for seg_idx in range(num_segments):
-            max_energy = -1
-            best_start = 0
-            
-            # 找到能量最大的10秒窗口(避开已选择的区域)
-            for start in range(0, len(audio_np) - segment_length + 1, step_size):
-                # 检查是否与已选择的片段重叠
-                overlap = False
-                for prev_start in selected_starts:
-                    if abs(start - prev_start) < segment_length:
-                        overlap = True
-                        break
-                
-                if not overlap:
-                    segment = audio_np[start:start + segment_length]
-                    energy = np.sum(segment ** 2)
-                    if energy > max_energy:
-                        max_energy = energy
-                        best_start = start
-            
-            selected_starts.append(best_start)
-            print(f"  片段{seg_idx+1}: {best_start/16000:.2f}s - {(best_start+segment_length)/16000:.2f}s")
-            
-            # 提取该片段的 SV embedding
-            segment_audio = audio_16k[:, best_start:best_start + segment_length]
-            segment_audio = segment_audio.to(device)
-            if is_half:
-                segment_audio = segment_audio.half()
-            
-            seg_sv_emb = sv_model.compute_embedding3(segment_audio)
-            sv_embeddings.append(seg_sv_emb)
-        
-        # 融合多个 SV embeddings (加权平均,能量高的权重大)
-        sv_emb = torch.stack(sv_embeddings).mean(dim=0)
-        print(f"融合后的 sv_emb.shape: {sv_emb.shape}")
-        
-    else:
-        # 音频不超过10秒,直接处理
-        audio_16k = audio_16k.to(device)
-        if is_half:
-            audio_16k = audio_16k.half()
-        
-        sv_emb = sv_model.compute_embedding3(audio_16k)
-        print(f"sv_emb.shape: {sv_emb.shape}")
-    
-    return sv_emb
-
 @app.post("/create_voice")
 async def create_voice(id: str = Form(...), file: UploadFile = File(...)):
     # 读取上传的音频文件
@@ -245,32 +129,6 @@ async def create_voice(id: str = Form(...), file: UploadFile = File(...)):
 
     # 应用响度平衡
     balanced_audio = balance_loudness(audio_np)
-    
-    # 截断音频：只使用前10秒作为参考音频
-    max_duration_seconds = 10.0
-    max_samples = int(sample_rate * max_duration_seconds)
-    
-    if len(balanced_audio) > max_samples:
-        print(f"警告：参考音频长度 {len(balanced_audio)/sample_rate:.2f}秒，超过推荐的{max_duration_seconds}秒")
-        print(f"将截取能量最高的 {max_duration_seconds} 秒片段作为参考音频")
-        
-        # 找到能量最高的10秒片段
-        window_size = max_samples
-        step_size = sample_rate  # 每秒滑动一次
-        max_energy = -1
-        best_start = 0
-        
-        for start in range(0, len(balanced_audio) - window_size + 1, step_size):
-            segment = balanced_audio[start:start + window_size]
-            energy = np.sum(segment ** 2)
-            if energy > max_energy:
-                max_energy = energy
-                best_start = start
-        
-        print(f"选择的片段时间范围: {best_start/sample_rate:.2f}s - {(best_start+window_size)/sample_rate:.2f}s")
-        balanced_audio = balanced_audio[best_start:best_start + window_size]
-    else:
-        print(f"参考音频长度 {len(balanced_audio)/sample_rate:.2f}秒，符合要求")
 
     # 将平衡后的音频转回字节数据
     balanced_audio_bytes = io.BytesIO()
@@ -280,8 +138,6 @@ async def create_voice(id: str = Form(...), file: UploadFile = File(...)):
     # 使用本地 faster-whisper 进行语音转文字
     # 保存临时音频文件
     temp_audio_path = f"temp_audio_{id}.wav"
-    detected_language = "zh"  # 默认中文
-    
     try:
         sf.write(temp_audio_path, balanced_audio, sample_rate)
         
@@ -289,15 +145,11 @@ async def create_voice(id: str = Form(...), file: UploadFile = File(...)):
         print(f"正在识别语音: {temp_audio_path}")
         segments, info = whisper_model.transcribe(
             temp_audio_path, 
-            language=None,  # 自动检测语言
-            beam_size=5,    # 提高准确度
+            language=None,  # 指定中文
+            beam_size=10,    # 提高准确度
             vad_filter=True # 使用VAD过滤静音
         )
-        
-        # 获取检测到的语言
         detected_language = info.language
-        print(f"检测到的语言: {detected_language} (置信度: {info.language_probability:.2%})")
-        
         # 拼接所有识别片段
         transcript_text = "".join([segment.text for segment in segments])
         print(f"识别结果: {transcript_text}")
@@ -306,6 +158,7 @@ async def create_voice(id: str = Form(...), file: UploadFile = File(...)):
         # 清理临时文件
         if os.path.exists(temp_audio_path):
             os.remove(temp_audio_path)
+
 
     # 只对中文进行简体化，其他语言保持原样
     if detected_language == "zh":
@@ -317,7 +170,7 @@ async def create_voice(id: str = Form(...), file: UploadFile = File(...)):
     # 处理音频和文本，获取必要的特征
     ref_audios_batch = [[balanced_audio_data]]  # 使用平衡后的音频数据
     prompt_texts_batch = [[prompt_text]]
-    prompt_lang = "auto"  # 假设输入总是中文，你可以根据需要修改
+    prompt_lang = detected_language  # 使用识别到的语言
 
     prompt_semantic, refer_spec = tts.set_ref_audio(ref_audios_batch,[0])
     refer_spec = refer_spec[0][0]
@@ -334,15 +187,33 @@ async def create_voice(id: str = Form(...), file: UploadFile = File(...)):
     # v2pro 版本需要额外处理 sv_emb
     if is_v2pro:
         print("应用 v2Pro 特殊处理...")
-        # 使用封装的函数计算 SV embedding
-        sv_emb = compute_sv_embedding_with_segmentation(
-            audio=balanced_audio,
-            sample_rate=sample_rate,
-            sv_model=sv_model,
-            device=tts_config.device,
-            is_half=tts_config.is_half,
-            max_duration=60
-        )
+        # 将音频转换为16k用于SV模型
+        audio_16k = torch.FloatTensor(balanced_audio)
+        # 统一转单声道并整理为 [1, T]
+        if audio_16k.ndim == 2:
+            # 可能是 (T, C) 或 (C, T)
+            if audio_16k.shape[0] <= 2 and audio_16k.shape[1] > audio_16k.shape[0]:
+                audio_16k = audio_16k.mean(dim=0)  # (C, T) -> (T)
+            else:
+                audio_16k = audio_16k.mean(dim=1)  # (T, C) -> (T)
+        if audio_16k.ndim == 1:
+            audio_16k = audio_16k.unsqueeze(0)  # [1, T]
+        
+        if sample_rate != 16000:
+            audio_16k = torch_resample(audio_16k, sample_rate, 16000)
+        if audio_16k.numel() < 400:
+            raise HTTPException(
+                status_code=400,
+                detail=f"音频太短，无法提取SV特征: samples={audio_16k.numel()} (<400)",
+            )
+        
+        audio_16k = audio_16k.to(tts_config.device)
+        if tts_config.is_half:
+            audio_16k = audio_16k.half()
+        
+        # 计算 sv_emb
+        sv_emb = sv_model.compute_embedding3(audio_16k)  # [1, 20480]
+        print(f"sv_emb.shape: {sv_emb.shape}")
         
         # 应用 v2pro 的特殊处理
         sv_emb_processed = tts.vits_model.sv_emb(sv_emb)  # B*20480 -> B*gin_channels

@@ -130,9 +130,9 @@ def get_param_key(request_data):
     """提取请求的参数特征，用于分组"""
     return (
         request_data.get("speed_factor", 1.0),
-        request_data.get("temperature", 1.0),
-        request_data.get("top_k", 5),
-        request_data.get("top_p", 1.0),
+        request_data.get("temperature", 0.8),
+        request_data.get("top_k", 20),
+        request_data.get("top_p", 0.9),
         request_data.get("volume", 1.0),
     )
 
@@ -230,9 +230,9 @@ class TTSRequest(BaseModel):
     text: str
     ids: List[str]
     speed_factor: float = 1.0
-    temperature: float = 1.0
-    top_k: int = 5
-    top_p: float = 1.0
+    temperature: float = 0.8
+    top_k: int = 20
+    top_p: float = 0.9
     volume: float = 1.0
 
 def replace_words(text: str):
